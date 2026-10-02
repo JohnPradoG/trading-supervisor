@@ -399,7 +399,7 @@ def test_worker_patterns_pass(
         assert trap.status == HypothesisStatus.VALIDATED
 
 
-def test_dashboard_traps_page(make_dash, committed: dict) -> None:
+def test_dashboard_traps_page(make_dash, committed: dict) -> None:  # noqa: F811 (fixture importada)
     dash = make_dash()
     assert dash.get("/dashboard/trampas").status_code == 303
     assert login(dash).status_code == 303
