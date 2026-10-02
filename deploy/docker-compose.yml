@@ -1,4 +1,4 @@
-# Trading Supervisor · Fase 3
+# Trading Supervisor · Fase 5
 # Uso (desde la carpeta deploy/):
 #   cp .env.example .env   # y completar las claves y el dominio
 #   docker compose up -d --build
@@ -6,8 +6,8 @@
 #   postgres  base de datos (solo accesible desde el propio VPS)
 #   migrate   aplica las migraciones y termina; la API espera a que acabe bien
 #   api       FastAPI (solo accesible a través de Caddy)
+#   worker    convierte los eventos del EA en operaciones (trades); sin puertos
 #   caddy     HTTPS automático con Let's Encrypt en los puertos 80/443
-# El worker se añade en la fase 5.
 
 name: trading-supervisor
 
@@ -89,6 +89,37 @@ services:
       resources:
         limits:
           memory: 512m
+    logging: *logging
+
+  worker:
+    image: trading-supervisor:latest
+    command: ["supervisor-worker"]
+    restart: unless-stopped
+    environment:
+      <<: *app-env
+      SUPERVISOR_WORKER_POLL_INTERVAL_SECONDS: ${SUPERVISOR_WORKER_POLL_INTERVAL_SECONDS:-2}
+      SUPERVISOR_REENTRY_WINDOW_MINUTES: ${SUPERVISOR_REENTRY_WINDOW_MINUTES:-30}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Con SIGTERM termina el lote en curso (segundos) y sale; se le da margen de sobra.
+    stop_grace_period: 30s
+    # La imagen comprueba la API en :8000; el worker no escucha puertos: se comprueba que
+    # siga dando vueltas (toca este archivo en cada una).
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; sys.exit(0 if time.time() - os.path.getmtime('/tmp/supervisor-worker.alive') < 120 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     logging: *logging
 
   caddy:

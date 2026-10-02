@@ -52,15 +52,15 @@ from supervisor.models.enums import (
 
 class RawEvent(Base):
     """Registro inmutable de cada mensaje aceptado del EA. Solo cambian status/processed_at/
-    error/attempts (lo garantiza un trigger en la base de datos)."""
+    error/attempts/next_attempt_at (lo garantiza un trigger en la base de datos)."""
 
     __tablename__ = "raw_events"
     __table_args__ = (
         UniqueConstraint("terminal_id", "idempotency_key"),
         Index(
             "ix_raw_events_pending",
-            "terminal_id",
-            "sent_at",
+            "event_time",
+            "id",
             postgresql_where=text("status = 'PENDING'"),
         ),
     )
@@ -72,6 +72,8 @@ class RawEvent(Base):
     schema_version: Mapped[int] = mapped_column(SmallInteger)
     payload: Mapped[Json]
     sent_at: Mapped[UTCDateTime]
+    # Hora del hecho en MT5 (time_utc del evento): el worker procesa en este orden.
+    event_time: Mapped[UTCDateTime | None]
     received_at: Mapped[CreatedAt]
     status: Mapped[RawEventStatus] = mapped_column(
         str_enum(RawEventStatus), server_default=RawEventStatus.PENDING.value
@@ -79,6 +81,8 @@ class RawEvent(Base):
     attempts: Mapped[int] = mapped_column(SmallInteger, server_default="0")
     processed_at: Mapped[UTCDateTime | None]
     error: Mapped[str | None] = mapped_column(Text)
+    # Evento diferido (p. ej. cierre recibido antes que la apertura): no se reintenta antes.
+    next_attempt_at: Mapped[UTCDateTime | None]
 
 
 class Trade(Base):
@@ -129,6 +133,11 @@ class Trade(Base):
     risk_amount: Mapped[Money | None]
     risk_percent: Mapped[Decimal | None] = mapped_column(Numeric(10, 4))
     balance_at_entry: Mapped[Money | None]
+
+    # Estado vivo de la posición: volumen abierto y último SL/TP conocido.
+    current_volume: Mapped[Volume | None]
+    current_sl: Mapped[Price | None]
+    current_tp: Mapped[Price | None]
 
     # Cierre
     close_time: Mapped[UTCDateTime | None]
