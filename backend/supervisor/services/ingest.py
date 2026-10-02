@@ -1,6 +1,6 @@
 """Ingesta desde el EA Monitor: valida, deduplica y guarda en crudo.
 
-Este módulo no interpreta operaciones (eso es el worker de la fase 5). Su único trabajo es
+Este módulo no interpreta operaciones (eso lo hace supervisor.worker). Su único trabajo es
 que cada hecho enviado por MT5 quede guardado exactamente una vez, y responder al EA qué
 pasó con cada evento para que lo saque de su cola local.
 """
@@ -96,6 +96,7 @@ def ingest_events(
                 schema_version=SCHEMA_VERSION,
                 payload=event.model_dump(mode="json"),
                 sent_at=batch.sent_at,
+                event_time=event.time_utc,
             )
             .on_conflict_do_nothing(index_elements=["terminal_id", "idempotency_key"])
             .returning(RawEvent.id)

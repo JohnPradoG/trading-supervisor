@@ -18,7 +18,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from supervisor.config import Settings
 from supervisor.main import create_app
@@ -159,3 +159,17 @@ def terminal(engine: Engine) -> dict:
 
 def _headers(terminal: dict) -> dict:
     return {"X-API-Key": terminal["key"]}
+
+
+# Fixtures del worker ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def worker_settings(database_url: str) -> Settings:
+    return Settings(database_url=database_url, admin_token=ADMIN_TOKEN, log_level="WARNING")
+
+
+@pytest.fixture
+def session_factory(engine: Engine) -> sessionmaker[Session]:
+    """Sesiones como las del worker: cada lote confirma su propia transacción."""
+    return sessionmaker(bind=engine, expire_on_commit=False)
