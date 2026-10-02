@@ -81,6 +81,8 @@ class DealReason(StrEnum):
     VMARGIN = "VMARGIN"
     SPLIT = "SPLIT"
     CORPORATE_ACTION = "CORPORATE_ACTION"
+    # Motivo que el EA no reconoce (builds futuros de MT5): se guarda sin inventar uno.
+    OTHER = "OTHER"
 
 
 class SymbolSpec(StrictModel):

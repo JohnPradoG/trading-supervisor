@@ -12,7 +12,8 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | 1 · Arquitectura | Aprobada |
 | 2 · Base de datos | Hecha: 25 tablas, migraciones Alembic, reglas de inmutabilidad, backups |
 | 3 · API | **Hecha**: ingesta idempotente, API keys por terminal, registro de bots, HTTPS con Caddy |
-| 4 · Bridge MT5 (EA Monitor) | Siguiente |
+| 4 · Bridge MT5 (EA Monitor) | **Hecha**: EA de solo lectura con cola en disco, ver [mt5/README.md](mt5/README.md) |
+| 5 · Registro de operaciones | Siguiente |
 
 ## Estructura
 
@@ -27,7 +28,7 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
 deploy/              Dockerfile, docker-compose.yml, Caddyfile, .env.example
 deploy/vps/          harden.sh (seguridad del VPS), install-docker.sh
 scripts/             backup.sh, restore.sh
-mt5/                 EA Monitor (fase 4)
+mt5/                 EA Monitor de solo lectura (SupervisorMonitor.mq5) y su guía
 ```
 
 ## Qué garantiza la base de datos (no solo el código)
@@ -125,7 +126,7 @@ python3 -m pip install -e ".[dev]"
 export SUPERVISOR_TEST_DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5432/postgres
 export SUPERVISOR_DATABASE_URL=$SUPERVISOR_TEST_DATABASE_URL
 export SUPERVISOR_ADMIN_TOKEN=$(openssl rand -hex 32)
-python3 -m pytest          # 39 pruebas: esquema, inmutabilidad, API, autenticación, idempotencia
+python3 -m pytest          # 43 pruebas: esquema, inmutabilidad, API, idempotencia, contrato con el EA
 python3 -m ruff check . && python3 -m ruff format --check .
 ```
 

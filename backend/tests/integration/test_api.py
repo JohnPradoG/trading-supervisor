@@ -1,8 +1,6 @@
 """Pruebas de la API contra PostgreSQL real: autenticación, idempotencia y registro."""
 
-import random
 import uuid
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,59 +8,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
-from supervisor.config import Settings
-from supervisor.main import create_app
-from supervisor.models import Account, ApiClient, Broker, Heartbeat, PriceBar, RawEvent, Terminal
-from supervisor.models.enums import AccountType, MarginMode
-from supervisor.security.api_keys import generate_api_key
+from supervisor.models import ApiClient, Heartbeat, PriceBar, RawEvent, Terminal
 
-ADMIN_TOKEN = "t" * 48
 NOW = datetime.now(UTC).replace(microsecond=0)
 
 
-@pytest.fixture(scope="module")
-def client(engine: Engine, database_url: str) -> Iterator[TestClient]:
-    settings = Settings(database_url=database_url, admin_token=ADMIN_TOKEN, log_level="WARNING")
-    app = create_app(settings)
-    with TestClient(app) as test_client:
-        yield test_client
-    app.state.engine.dispose()
-
-
-@pytest.fixture
-def terminal(engine: Engine) -> dict:
-    """Cuenta + terminal + API key, confirmados en la base (la API usa su propia conexión)."""
-    login = random.randint(10_000_000, 99_999_999)
-    key = generate_api_key()
-    with Session(engine) as session:
-        broker = Broker(name=f"Exness-{uuid.uuid4().hex[:8]}")
-        account = Account(
-            broker=broker,
-            login=login,
-            server="Exness-MT5Trial",
-            currency="USD",
-            account_type=AccountType.DEMO,
-            margin_mode=MarginMode.HEDGING,
-        )
-        session.add_all([broker, account])
-        session.flush()
-        term = Terminal(account_id=account.id, name=f"win-{uuid.uuid4().hex[:8]}")
-        session.add(term)
-        session.flush()
-        api_client = ApiClient(terminal_id=term.id, key_prefix=key.prefix, key_hash=key.key_hash)
-        session.add(api_client)
-        session.commit()
-        return {
-            "key": key.plaintext,
-            "login": login,
-            "terminal_id": term.id,
-            "broker_id": broker.id,
-            "api_client_id": api_client.id,
-        }
-
-
-def _headers(terminal: dict) -> dict:
-    return {"X-API-Key": terminal["key"]}
+from tests.conftest import ADMIN_TOKEN, _headers  # noqa: E402
 
 
 def _admin() -> dict:
