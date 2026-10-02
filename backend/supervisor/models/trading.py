@@ -97,6 +97,8 @@ class Trade(Base):
         Index("ix_trades_version_entry", "bot_version_id", "entry_time"),
         Index("ix_trades_symbol_entry", "symbol", "entry_time"),
         Index("ix_trades_open", "account_id", postgresql_where=text("status = 'OPEN'")),
+        # Estadísticas y repaso del análisis: operaciones cerradas por hora de cierre.
+        Index("ix_trades_closed", "close_time", postgresql_where=text("status = 'CLOSED'")),
     )
 
     trade_id: Mapped[UUIDPk]

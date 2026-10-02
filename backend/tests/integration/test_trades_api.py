@@ -74,13 +74,18 @@ def test_trades_filters(client: TestClient, trades: dict) -> None:
     assert _ids(by_bot) == [trades["open"], trades["closed"]]
     by_version = client.get(f"/v1/trades?version_id={trades['version_id']}", headers=admin())
     assert _ids(by_version) == [trades["open"], trades["closed"]]
+    # Con `params`, httpx sustituye la query de la URL: el símbolo va también en params.
     window = client.get(
-        base,
-        params={"from": at(10).isoformat(), "to": at(60).isoformat()},
+        "/v1/trades",
+        params={"symbol": trades["symbol"], "from": at(10).isoformat(), "to": at(60).isoformat()},
         headers=admin(),
     )
     assert _ids(window) == [trades["open"]]
-    naive = client.get(base, params={"from": at(45).strftime("%Y-%m-%dT%H:%M:%S")}, headers=admin())
+    naive = client.get(
+        "/v1/trades",
+        params={"symbol": trades["symbol"], "from": at(45).strftime("%Y-%m-%dT%H:%M:%S")},
+        headers=admin(),
+    )
     assert _ids(naive) == [trades["unassigned"]]
     page = client.get(f"{base}&limit=1&offset=1", headers=admin())
     assert _ids(page) == [trades["open"]]

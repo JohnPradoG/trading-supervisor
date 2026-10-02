@@ -358,7 +358,7 @@ def test_pages_render_with_data(dash: TestClient, seeded: dict) -> None:
         "TRADE_OPENED",
         "SL_MODIFIED",
         "TRADE_CLOSED",
-        "Análisis pendiente",
+        "HECHO",
         'id="analisis"',
         "MFE",
         "/velas",

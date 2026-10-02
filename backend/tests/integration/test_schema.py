@@ -1,9 +1,10 @@
 """Las migraciones crean exactamente el esquema de los modelos, y se pueden revertir."""
 
+import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from sqlalchemy import Engine, inspect, select
+from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.orm import Session
 
 from supervisor.models import Base, RawEvent
@@ -68,3 +69,70 @@ def test_migration_0003_roundtrip_backfills_event_time(
             select(RawEvent.event_time).where(RawEvent.idempotency_key == "mig:1")
         )
     assert restored.isoformat() == "2026-10-02T11:59:58.250000+00:00"
+
+
+def test_migration_0004_roundtrip_keeps_existing_analyses(
+    database_url: str, engine: Engine, terminal: dict
+) -> None:
+    """0004 se puede revertir y volver a aplicar con análisis ya guardados (incluida una
+    hipótesis anterior a la regla FACT/HYPOTHESIS, que se conserva sin validar)."""
+    with engine.begin() as conn:
+        trade_id = conn.execute(
+            text(
+                "INSERT INTO trades (trade_id, account_id, position_id, magic_number, symbol,"
+                " direction, order_type, source, entry_time, entry_price, initial_volume,"
+                " max_volume) SELECT gen_random_uuid(), accounts.id, 424242, 1, 'X', 'BUY', 'UNKNOWN',"
+                " 'DEMO', now(), 1, 1, 1 FROM terminals t JOIN accounts ON accounts.id = t.account_id"
+                " WHERE t.id = :term RETURNING trade_id"
+            ),
+            {"term": terminal["terminal_id"]},
+        ).scalar()
+    cfg = alembic_config(database_url)
+    engine.dispose()
+    command.downgrade(cfg, "0003")
+    assert "input_hash" not in _columns(engine, "trade_analyses")
+    assert "supported_by" not in _columns(engine, "analysis_findings")
+    with engine.begin() as conn:
+        analysis_id = conn.execute(
+            text(
+                "INSERT INTO trade_analyses (id, trade_id, analysis_version, outcome)"
+                " VALUES (gen_random_uuid(), :t, 1, 'LOSS') RETURNING id"
+            ),
+            {"t": trade_id},
+        ).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO analysis_findings (id, analysis_id, kind, code, text)"
+                " VALUES (gen_random_uuid(), :a, 'HYPOTHESIS', 'H_OLD', 'antigua')"
+            ),
+            {"a": analysis_id},
+        )
+    engine.dispose()
+    command.upgrade(cfg, "head")
+    assert {"analyzer_version", "ruleset_version", "input_hash", "inputs", "data_quality"} <= (
+        _columns(engine, "trade_analyses")
+    )
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT analyzer_version, input_hash, data_quality FROM trade_analyses"
+                " WHERE id = :a"
+            ),
+            {"a": analysis_id},
+        ).one()
+        assert tuple(row) == ("0.0.0", "", [])
+        validated = conn.execute(
+            text(
+                "SELECT convalidated FROM pg_constraint"
+                " WHERE conname = 'ck_analysis_findings_fact_vs_hypothesis'"
+            )
+        ).scalar()
+        assert validated is False  # hay una hipótesis antigua: solo se exige a filas nuevas
+    with engine.begin() as conn, pytest.raises(Exception, match="fact_vs_hypothesis"):
+        conn.execute(
+            text(
+                "INSERT INTO analysis_findings (id, analysis_id, kind, code, text, confidence)"
+                " VALUES (gen_random_uuid(), :a, 'FACT', 'F', 'x', 'alta')"
+            ),
+            {"a": analysis_id},
+        )

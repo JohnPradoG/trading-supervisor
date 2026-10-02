@@ -27,7 +27,7 @@ from supervisor.models import (
     Terminal,
     Trade,
 )
-from supervisor.models.enums import Direction, RawEventStatus, TradeStatus
+from supervisor.models.enums import Direction, FindingKind, RawEventStatus, TradeStatus
 from supervisor.services import trades as trades_service
 
 ONLINE_SECONDS = 120
@@ -353,18 +353,27 @@ def trade_detail(session: Session, trade_id: uuid.UUID) -> TradeDetail:
 
 
 def trade_analysis(session: Session, trade_id: uuid.UUID) -> dict[str, Any] | None:
-    """Hueco para el análisis post-operación de la Fase 6 (GET /v1/trades/{id}/analysis).
+    """Análisis vigente de la Fase 6 en la forma que usa templates/partials/analisis.html.
+    None si la operación sigue abierta o el worker aún no la analizó."""
+    from supervisor.services.analysis import get_trade_analysis
 
-    Mientras no exista el servicio devuelve None y la plantilla muestra "Análisis pendiente".
-    Para conectarlo basta con devolver aquí un dict con esta forma (la que usa
-    templates/partials/analisis.html):
+    analysis = get_trade_analysis(session, trade_id).analysis
+    if analysis is None:
+        return None
+    findings = sorted(analysis.findings, key=lambda f: f.position)
 
-        {"outcome": "WIN", "analyzer_version": "...", "created_at": datetime,
-         "facts": [{"text": "...", "confidence": None}],
-         "hypotheses": [{"text": "...", "confidence": "media"}],
-         "data_quality": [{"code": "...", "text": "..."}]}
-    """
-    return None
+    def _finding(f: Any) -> dict[str, Any]:
+        confidence = f.confidence.replace("_", " ") if f.confidence else None
+        return {"text": f.text, "confidence": confidence}
+
+    return {
+        "outcome": analysis.outcome,
+        "analyzer_version": analysis.analyzer_version,
+        "created_at": analysis.created_at,
+        "facts": [_finding(f) for f in findings if f.kind == FindingKind.FACT],
+        "hypotheses": [_finding(f) for f in findings if f.kind == FindingKind.HYPOTHESIS],
+        "data_quality": list(analysis.data_quality or []),
+    }
 
 
 # Series para gráficos ----------------------------------------------------------------------

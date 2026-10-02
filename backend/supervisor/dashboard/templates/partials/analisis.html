@@ -28,6 +28,6 @@
     <ul class="findings">{% for n in analysis.data_quality %}<li><span class="mono small">{{ n.code }}</span> {{ n.text }}</li>{% endfor %}</ul>
     {% endif %}
   {% else %}
-    <p class="muted">Análisis pendiente: lo generará la Fase 6 (hechos e hipótesis por operación).</p>
+    <p class="muted">Análisis pendiente: se genera cuando la operación se cierra (el worker lo hace en su próximo repaso).</p>
   {% endif %}
 </section>
