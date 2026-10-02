@@ -22,6 +22,7 @@ from supervisor.schemas.analysis import (
     TradeDnaOut,
 )
 from supervisor.services import dna as dna_service
+from supervisor.services import patterns as patterns_service
 from supervisor.services import stats as stats_service
 from supervisor.services.analysis import get_trade_analysis
 from supervisor.services.stats import StatsFilters
@@ -95,6 +96,14 @@ def trade_analysis(
     if view.analysis is not None:
         a = view.analysis
         findings = [FindingOut.model_validate(f) for f in a.findings]
+        lookup = patterns_service.rule_validation(
+            session, view.trade.bot_version_id, view.trade.symbol
+        )
+        for f in findings:
+            if f.kind == FindingKind.HYPOTHESIS:
+                f.validation = lookup.get(
+                    (f.code, f.rule_version), patterns_service.no_rule_validation()
+                )
         analysis = AnalysisOut(
             **AnalysisVersionOut.model_validate(a).model_dump(),
             id=a.id,
@@ -150,6 +159,5 @@ def trade_dna(
         history=[DnaVersionOut.model_validate(h) for h in view.history],
         note=None
         if dna
-        else "aún sin DNA: el worker lo calcula al registrar la operación "
-        "o en su próximo repaso",
+        else "aún sin DNA: el worker lo calcula al registrar la operación o en su próximo repaso",
     )

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Trampas{% endblock %}
+{% macro seg(s) -%}
+  {%- if s -%}
+  <span class="nowrap">n={{ s.n }}</span> ·
+  <span class="nowrap {{ s.expectancy_r | sign }}">{{ s.expectancy_r | num }} R</span>
+  {%- if s.expectancy_r_ic95 %} <span class="muted small nowrap">[{{ s.expectancy_r_ic95[0] | num }}, {{ s.expectancy_r_ic95[1] | num }}]</span>{% endif %}
+  · <span class="nowrap">WR {{ (s.win_rate * 100) | pct if s.win_rate is not none else '—' }}</span>
+  · <span class="nowrap">PF {{ s.profit_factor_r | num if s.profit_factor_r is not none else '—' }}</span>
+  {%- else -%}<span class="muted">—</span>{%- endif -%}
+{%- endmacro %}
+{% block content %}
+<h1>Trampas</h1>
+<p class="muted">Una <strong>trampa</strong> es una condición de entrada en la que el bot pierde de forma
+sistemática. Solo se muestra como <strong>trampa validada</strong> si pasó las tres pruebas en orden
+cronológico: entrenamiento (con FDR de Benjamini-Hochberg a q = {{ fdr_q }} sobre <em>todas</em> las
+candidatas probadas), validación y fuera de muestra (evaluado una sola vez, mínimo {{ min_n_oos }}
+operaciones). Todo lo demás es <em>candidata, no validada</em>.</p>
+
+{% for b in blocks %}{% set o = b.overview %}
+<section class="card">
+  <div class="card-head">
+    <h2>{{ b.bot.name }} <span class="muted small">v{{ b.version.version }}{% if b.symbol %} · {{ b.symbol }}{% else %} · todos los símbolos{% endif %}</span></h2>
+    {% if o.trampas_validadas %}<span class="badge bad">{{ o.trampas_validadas }} trampa{{ 's' if o.trampas_validadas != 1 }} validada{{ 's' if o.trampas_validadas != 1 }}</span>{% else %}<span class="badge muted-badge">ninguna trampa validada</span>{% endif %}
+  </div>
+  <p class="trap-scope">
+    {{ o.operaciones_cerradas }} operaciones cerradas con riesgo ·
+    {{ o.candidatas_probadas_ultima }} candidatas probadas en la última búsqueda ({{ o.candidatas_probadas_total }} en total) ·
+    {{ o.trampas_candidatas }} trampas candidatas · {{ o.rechazadas }} rechazadas · {{ o.caducadas }} caducadas
+    {% if o.ultima_ejecucion %}· última búsqueda {{ o.ultima_ejecucion.finished_at | utc('%Y-%m-%d %H:%M') }} UTC{% endif %}
+  </p>
+  {% if o.aviso %}<p class="notice">{{ o.aviso }}</p>{% endif %}
+
+  <h3>Trampas validadas</h3>
+  {% if b.validated %}
+  <div class="table-wrap">
+  <table class="trap-table">
+    <thead><tr><th>Condición</th><th>Fuera de muestra</th><th>Entrenamiento</th><th>Forward</th></tr></thead>
+    <tbody>
+    {% for p in b.validated %}
+      <tr>
+        <td><span class="badge bad">trampa validada</span> {{ p.statement }}{% if p.origin == 'REGLA' %} <span class="muted small">(regla de la fase 6)</span>{% endif %}</td>
+        <td>{{ seg(p.fuera_de_muestra) }}</td>
+        <td>{{ seg(p.entrenamiento) }}</td>
+        <td>{{ seg(p.forward) }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">Ninguna condición ha pasado todavía las tres pruebas.</p>
+  {% endif %}
+
+  {% if b.candidates %}
+  <h3>Candidatas <span class="muted small">(no validadas: no son trampas hasta pasar fuera de muestra)</span></h3>
+  <div class="table-wrap">
+  <table class="trap-table">
+    <thead><tr><th>Condición</th><th>Entrenamiento</th><th>Validación</th><th>Estado</th></tr></thead>
+    <tbody>
+    {% for p in b.candidates %}
+      <tr>
+        <td><span class="badge muted-badge">candidata, no validada</span> {{ p.kind_text }}: {{ p.statement }}</td>
+        <td>{{ seg(p.entrenamiento) }}</td>
+        <td>{{ seg(p.validacion) }}</td>
+        <td class="muted small">{{ p.status_note or '' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+
+  {% if b.validated_edges %}
+  <h3>Ventajas validadas</h3>
+  <ul class="findings">
+  {% for p in b.validated_edges %}<li><span class="badge ok">ventaja validada</span> {{ p.statement }} · fuera de muestra {{ seg(p.fuera_de_muestra) }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  <p class="muted small">Informe completo: <span class="mono">GET /v1/bots/{{ b.bot.bot_id }}/versions/{{ b.version.id }}/report</span> o <span class="mono">supervisor-cli patterns --version {{ b.version.id }} --report-only</span>.</p>
+</section>
+{% else %}
+<section class="card">
+  <p class="notice">Todavía no hay operaciones cerradas de ningún bot: no se puede validar ninguna trampa. Se necesitan al menos {{ min_trades }} operaciones cerradas (con riesgo conocido) por versión para separar entrenamiento, validación y fuera de muestra.</p>
+</section>
+{% endfor %}
+{% endblock %}

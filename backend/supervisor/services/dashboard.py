@@ -356,15 +356,21 @@ def trade_analysis(session: Session, trade_id: uuid.UUID) -> dict[str, Any] | No
     """Análisis vigente de la Fase 6 en la forma que usa templates/partials/analisis.html.
     None si la operación sigue abierta o el worker aún no la analizó."""
     from supervisor.services.analysis import get_trade_analysis
+    from supervisor.services.patterns import no_rule_validation, rule_validation
 
-    analysis = get_trade_analysis(session, trade_id).analysis
+    view = get_trade_analysis(session, trade_id)
+    analysis = view.analysis
     if analysis is None:
         return None
     findings = sorted(analysis.findings, key=lambda f: f.position)
+    lookup = rule_validation(session, view.trade.bot_version_id, view.trade.symbol)
 
     def _finding(f: Any) -> dict[str, Any]:
         confidence = f.confidence.replace("_", " ") if f.confidence else None
-        return {"text": f.text, "confidence": confidence}
+        validation = None
+        if f.kind == FindingKind.HYPOTHESIS:
+            validation = lookup.get((f.code, f.rule_version), no_rule_validation())
+        return {"text": f.text, "confidence": confidence, "validation": validation}
 
     return {
         "outcome": analysis.outcome,

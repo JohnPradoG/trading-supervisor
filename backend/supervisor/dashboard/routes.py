@@ -23,6 +23,7 @@ from supervisor.dashboard import auth
 from supervisor.dashboard.auth import DashboardSession
 from supervisor.models.enums import Direction, TradeStatus
 from supervisor.services import dashboard as svc
+from supervisor.services import patterns as patterns_svc
 from supervisor.services.errors import NotFound
 
 log = logging.getLogger("supervisor.dashboard")
@@ -269,6 +270,7 @@ def resumen(request: Request, dash: DashSession, session: SessionDep) -> HTMLRes
         "summary_7d": svc.closed_summary(session, now - timedelta(days=7), now + timedelta(days=1)),
         "chart_accounts": [b for b in balances if b.ts is not None],
         "ranges": list(svc.EQUITY_RANGES),
+        "active_traps": patterns_svc.active_traps(session),
     }
     return _render(request, "resumen.html", context, dash)
 
@@ -434,6 +436,23 @@ def trade_bars_data(trade_id: uuid.UUID, dash: DashSession, session: SessionDep)
         },
         headers={"Cache-Control": "no-store"},
     )
+
+
+# Trampas ---------------------------------------------------------------------------------
+
+
+@router.get("/trampas")
+def trampas(
+    request: Request, dash: DashSession, session: SessionDep, settings: SettingsDep
+) -> HTMLResponse:
+    context = {
+        "nav": "trampas",
+        "blocks": patterns_svc.traps_page(session, settings),
+        "min_trades": settings.patterns_min_trades,
+        "min_n_oos": settings.patterns_min_n_oos,
+        "fdr_q": settings.patterns_fdr_q,
+    }
+    return _render(request, "trampas.html", context, dash)
 
 
 # Bots y sistema ---------------------------------------------------------------------------
