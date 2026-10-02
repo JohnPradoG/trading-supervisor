@@ -6,7 +6,8 @@
 #   postgres  base de datos (solo accesible desde el propio VPS)
 #   migrate   aplica las migraciones y termina; la API espera a que acabe bien
 #   api       FastAPI + dashboard web en /dashboard (solo accesible a través de Caddy)
-#   worker    convierte los eventos del EA en operaciones (trades) y las analiza; sin puertos
+#   worker    convierte los eventos del EA en operaciones (trades), las analiza y evalúa las
+#             alertas (Telegram opcional); sin puertos
 #   caddy     HTTPS automático con Let's Encrypt en los puertos 80/443
 
 name: trading-supervisor
@@ -20,6 +21,12 @@ x-app-env: &app-env
   # Análisis y estadísticas: la API y el worker deben usar los mismos valores.
   SUPERVISOR_BREAKEVEN_R_FRACTION: ${SUPERVISOR_BREAKEVEN_R_FRACTION:-0.05}
   SUPERVISOR_STATS_MIN_SAMPLE: ${SUPERVISOR_STATS_MIN_SAMPLE:-30}
+  # Alertas por Telegram (opcional): el worker envía y `supervisor-cli alerts test` prueba
+  # desde la API. Vacíos = canal desactivado (las alertas solo se ven en el dashboard).
+  SUPERVISOR_TELEGRAM_BOT_TOKEN: ${SUPERVISOR_TELEGRAM_BOT_TOKEN:-}
+  SUPERVISOR_TELEGRAM_CHAT_ID: ${SUPERVISOR_TELEGRAM_CHAT_ID:-}
+  # Enlaces de los mensajes al dashboard.
+  SUPERVISOR_PUBLIC_URL: https://${SUPERVISOR_DOMAIN:-localhost}
 
 x-logging: &logging
   driver: json-file
@@ -103,6 +110,13 @@ services:
       <<: *app-env
       SUPERVISOR_WORKER_POLL_INTERVAL_SECONDS: ${SUPERVISOR_WORKER_POLL_INTERVAL_SECONDS:-2}
       SUPERVISOR_REENTRY_WINDOW_MINUTES: ${SUPERVISOR_REENTRY_WINDOW_MINUTES:-30}
+      SUPERVISOR_ALERTS_ENABLED: ${SUPERVISOR_ALERTS_ENABLED:-true}
+      SUPERVISOR_ALERTS_COOLDOWN_MINUTES: ${SUPERVISOR_ALERTS_COOLDOWN_MINUTES:-60}
+      SUPERVISOR_ALERTS_TRAP_WINDOW_MINUTES: ${SUPERVISOR_ALERTS_TRAP_WINDOW_MINUTES:-60}
+      SUPERVISOR_ALERTS_HEARTBEAT_MINUTES: ${SUPERVISOR_ALERTS_HEARTBEAT_MINUTES:-5}
+      SUPERVISOR_ALERTS_SKIP_WEEKENDS: ${SUPERVISOR_ALERTS_SKIP_WEEKENDS:-true}
+      SUPERVISOR_ALERTS_WEEKEND_START_HOUR_UTC: ${SUPERVISOR_ALERTS_WEEKEND_START_HOUR_UTC:-21}
+      SUPERVISOR_ALERTS_WEEKEND_END_HOUR_UTC: ${SUPERVISOR_ALERTS_WEEKEND_END_HOUR_UTC:-21}
     depends_on:
       migrate:
         condition: service_completed_successfully

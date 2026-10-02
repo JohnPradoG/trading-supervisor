@@ -18,6 +18,8 @@
     ts experiment run-filter --id 1
     ts experiment import-backtest --id 1 --file informe.csv   (o --file - por la entrada)
     ts experiment show --id 1 | ts experiment list
+    ts alerts list [--kind TRAMPA_ACTIVA] [--unacknowledged] | ts alerts test
+    ts telegram setup-help
 
 Las cuentas y las API keys se crean aquí y no por HTTP: así una API key comprometida o un
 token de administración filtrado no permiten fabricar credenciales nuevas.
@@ -33,6 +35,7 @@ from typing import Any
 
 from sqlalchemy import select, update
 
+from supervisor.alerts import telegram as tg
 from supervisor.analytics import pattern_search
 from supervisor.analytics.analyzer import analyze_by_id, closed_trade_ids
 from supervisor.analytics.dna import dna_by_id, trade_ids_page
@@ -41,6 +44,7 @@ from supervisor.db import session_scope
 from supervisor.models import Account, ApiClient, Bot, BotVersion, Broker, RawEvent, Terminal
 from supervisor.models.enums import AccountType, MarginMode, RawEventStatus, TradeSource
 from supervisor.security.api_keys import generate_api_key
+from supervisor.services import alerts as alerts_service
 from supervisor.services import dna as dna_service
 from supervisor.services import lab as lab_service
 from supervisor.services import patterns as patterns_service
@@ -774,6 +778,88 @@ def experiment_list(_: argparse.Namespace) -> None:
         print(f"{e['code']} [{e['status_text']}] {e['title']} · {e['base_version']}{extra}")
 
 
+# Alertas y Telegram ------------------------------------------------------------------------
+
+TELEGRAM_HELP = """\
+Cómo recibir las alertas en Telegram (unos 5 minutos, sin programar):
+
+1. Crear el bot
+   - En Telegram, busca @BotFather (tiene la marca azul de verificado) y ábrelo.
+   - Escribe /newbot y responde a sus dos preguntas: un nombre (p. ej. "Mi Supervisor") y un
+     usuario que termine en "bot" (p. ej. mi_supervisor_alertas_bot).
+   - BotFather responde con un TOKEN parecido a 123456789:AAH...xyz. Es una contraseña:
+     no lo compartas ni lo pegues en ningún chat.
+
+2. Hablar con el bot
+   - Abre el enlace t.me/<usuario_de_tu_bot> que te dio BotFather y pulsa INICIAR (o escribe
+     cualquier mensaje). Un bot no puede escribirte hasta que tú le escribas primero.
+   - Si prefieres un grupo: crea el grupo, añade el bot y escribe un mensaje en el grupo.
+
+3. Averiguar el chat id
+   - En el navegador abre (cambiando TOKEN por el tuyo):
+       https://api.telegram.org/botTOKEN/getUpdates
+   - Busca "chat":{"id": ... }. Ese número es el chat id (en un grupo empieza por -100...).
+   - Si sale "result":[] vacío, vuelve a escribir al bot y recarga la página.
+
+4. Configurar el supervisor (en el VPS)
+   - Edita deploy/.env y añade:
+       SUPERVISOR_TELEGRAM_BOT_TOKEN=123456789:AAH...xyz
+       SUPERVISOR_TELEGRAM_CHAT_ID=987654321
+   - Aplica los cambios:  docker compose up -d
+   - Prueba:  docker compose exec api supervisor-cli alerts test
+     Debe llegarte un mensaje "Prueba del Trading Supervisor".
+
+Si algo falla, `alerts test` explica el motivo (token o chat id incorrectos, sin conexión).
+Sin token o sin chat id el canal queda desactivado y las alertas solo se ven en el dashboard
+(https://TU_DOMINIO/dashboard/alertas). El bot solo envía avisos: no recibe órdenes ni
+controla MT5.
+"""
+
+
+def telegram_setup_help(_: argparse.Namespace) -> None:
+    print(TELEGRAM_HELP)
+
+
+def alerts_test(_: argparse.Namespace) -> None:
+    settings = get_settings()
+    if not settings.telegram_enabled:
+        sys.exit(
+            "Telegram no está configurado: faltan SUPERVISOR_TELEGRAM_BOT_TOKEN o "
+            "SUPERVISOR_TELEGRAM_CHAT_ID. Ver: supervisor-cli telegram setup-help"
+        )
+    client = tg.TelegramClient.from_settings(settings)
+    text = tg.format_alert(
+        severity="INFO",
+        event="DISPARO",
+        title="Prueba del Trading Supervisor",
+        lines=["Si lees esto, las alertas llegarán a este chat."],
+        link=(settings.public_url.rstrip("/") + "/dashboard/alertas")
+        if settings.public_url
+        else None,
+    )
+    try:
+        client.send_message(text)
+    except tg.TelegramError as exc:
+        sys.exit(f"No se pudo enviar: {client.redact(exc.message)}")
+    print("Mensaje de prueba enviado a Telegram.")
+
+
+def alerts_list(args: argparse.Namespace) -> None:
+    with session_scope() as session:
+        items = alerts_service.list_alerts(
+            session, rule=args.kind, unacknowledged=args.unacknowledged, limit=args.limit
+        )
+    if not items:
+        print("No hay alertas.")
+    for a in items:
+        ack = " [reconocida]" if a["acknowledged_at"] else ""
+        event = " [resuelta]" if a["event"] == "RESUELTA" else ""
+        print(
+            f"{a['created_at']:%Y-%m-%d %H:%M} UTC · {a['severity_text']} · {a['rule']}{event}"
+            f"{ack} · Telegram {a['delivery_text']} · {a['message']}"
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="supervisor-cli", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -890,6 +976,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=experiment_show)
     p = exp_sub.add_parser("list", help="lista de experimentos")
     p.set_defaults(func=experiment_list)
+
+    alerts = sub.add_parser("alerts", help="alertas: listar y probar Telegram")
+    alerts_sub = alerts.add_subparsers(dest="alerts_command", required=True)
+    p = alerts_sub.add_parser("list", help="últimas alertas")
+    p.add_argument("--kind", choices=alerts_service.KINDS)
+    p.add_argument("--unacknowledged", action="store_true", help="solo sin reconocer")
+    p.add_argument("--limit", type=int, default=30)
+    p.set_defaults(func=alerts_list)
+    p = alerts_sub.add_parser("test", help="enviar un mensaje de prueba a Telegram")
+    p.set_defaults(func=alerts_test)
+
+    telegram = sub.add_parser("telegram", help="ayuda para configurar Telegram")
+    telegram_sub = telegram.add_subparsers(dest="telegram_command", required=True)
+    p = telegram_sub.add_parser("setup-help", help="paso a paso: crear el bot y el chat id")
+    p.set_defaults(func=telegram_setup_help)
     return parser
 
 

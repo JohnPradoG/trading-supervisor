@@ -1,8 +1,9 @@
 """Páginas del dashboard (/dashboard): HTML renderizado en el servidor con Jinja2 + HTMX.
 
 Solo lectura: ninguna ruta modifica datos de trading ni envía nada a MT5. Los únicos POST son
-login, logout y "crear experimento" desde una trampa validada (escribe solo en las tablas del
-laboratorio, con token CSRF). Las horas se muestran siempre en UTC.
+login, logout, "crear experimento" desde una trampa validada (escribe solo en las tablas del
+laboratorio) y "reconocer" una alerta (solo pone acknowledged_at), con token CSRF. Las horas
+se muestran siempre en UTC.
 """
 
 import logging
@@ -22,7 +23,8 @@ from supervisor import __version__
 from supervisor.api.deps import SessionDep, SettingsDep
 from supervisor.dashboard import auth
 from supervisor.dashboard.auth import DashboardSession
-from supervisor.models.enums import Direction, TradeStatus
+from supervisor.models.enums import AlertSeverity, Direction, TradeStatus
+from supervisor.services import alerts as alerts_svc
 from supervisor.services import dashboard as svc
 from supervisor.services import lab as lab_svc
 from supervisor.services import patterns as patterns_svc
@@ -162,10 +164,21 @@ def _render(
 ) -> HTMLResponse:
     context = {
         "csrf_token": session.csrf_token if session else None,
+        "alerts_badge": _alerts_badge(request) if session else 0,
         "session_expires": datetime.fromtimestamp(session.expires_at, UTC) if session else None,
         **context,
     }
     return templates.TemplateResponse(request, name, context, status_code=status_code)
+
+
+def _alerts_badge(request: Request) -> int:
+    """Alertas sin reconocer para la insignia del menú (consulta propia y barata)."""
+    try:
+        with request.app.state.session_factory() as db:
+            return alerts_svc.unacknowledged_count(db)
+    except Exception:
+        log.exception("no se pudo contar las alertas")
+        return 0
 
 
 router = APIRouter(prefix="/dashboard", include_in_schema=False)
@@ -273,6 +286,7 @@ def resumen(request: Request, dash: DashSession, session: SessionDep) -> HTMLRes
         "chart_accounts": [b for b in balances if b.ts is not None],
         "ranges": list(svc.EQUITY_RANGES),
         "active_traps": patterns_svc.active_traps(session),
+        "trap_alerts": alerts_svc.recent_traps(session),
     }
     return _render(request, "resumen.html", context, dash)
 
@@ -455,6 +469,59 @@ def trampas(
         "fdr_q": settings.patterns_fdr_q,
     }
     return _render(request, "trampas.html", context, dash)
+
+
+# Alertas ----------------------------------------------------------------------------------
+
+
+@router.get("/alertas")
+def alertas(
+    request: Request,
+    dash: DashSession,
+    session: SessionDep,
+    tipo: str | None = None,
+    gravedad: str | None = None,
+    pendientes: str | None = None,
+) -> HTMLResponse:
+    kind = tipo if tipo in alerts_svc.KINDS else None
+    severity = _parse_enum(AlertSeverity, gravedad)
+    only_open = pendientes == "1"
+    context = {
+        "nav": "alertas",
+        "alerts": alerts_svc.list_alerts(
+            session, rule=kind, severity=severity, unacknowledged=only_open, limit=200
+        ),
+        "kinds": [(k, alerts_svc.engine.RULES[k]) for k in alerts_svc.KINDS],
+        "severities": list(alerts_svc.SEVERITY_TEXT.items()),
+        "selected": {
+            "tipo": kind or "",
+            "gravedad": severity.value if severity else "",
+            "pendientes": "1" if only_open else "",
+        },
+        "telegram": request.app.state.settings.telegram_enabled,
+    }
+    return _render(request, "alertas.html", context, dash)
+
+
+@router.post("/alertas/{alert_id}/reconocer")
+def reconocer_alerta(
+    request: Request,
+    alert_id: uuid.UUID,
+    dash: DashSession,
+    session: SessionDep,
+    csrf_token: Annotated[str, Form(max_length=128)] = "",
+    next: Annotated[str, Form(max_length=2048)] = "/dashboard/alertas",
+) -> Response:
+    if not auth.same_origin(request) or not auth.tokens_match(dash.csrf_token, csrf_token):
+        log.warning(
+            "reconocer alerta rechazado por CSRF", extra={"client": auth.client_ip(request)}
+        )
+        return JSONResponse({"detail": "token CSRF inválido"}, status_code=403)
+    try:
+        alerts_svc.acknowledge(session, alert_id)
+    except NotFound:
+        return JSONResponse({"detail": "alerta no encontrada"}, status_code=404)
+    return RedirectResponse(_safe_next(next), status_code=303)
 
 
 # Bots y sistema ---------------------------------------------------------------------------

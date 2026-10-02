@@ -1,0 +1,35 @@
+{# Tabla de alertas. `alerts` viene de supervisor.services.alerts.list_alerts. #}
+{% macro alerts_table(alerts, csrf_token, next_url='/dashboard/alertas') %}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Hora (UTC)</th><th>Tipo</th><th>Gravedad</th><th>Alerta</th><th>Telegram</th><th></th></tr></thead>
+  <tbody>
+  {% for a in alerts %}
+    <tr id="a-{{ a.id }}">
+      <td class="nowrap">{{ a.created_at | utc('%m-%d %H:%M:%S') }}</td>
+      <td class="nowrap">{{ a.rule_text }}{% if a.event == 'RESUELTA' %} <span class="badge ok">resuelta</span>{% endif %}</td>
+      <td><span class="badge {{ 'bad' if a.severity == 'CRITICAL' else ('warn' if a.severity == 'WARNING' else 'info') }}">{{ a.severity_text }}</span></td>
+      <td><strong>{{ a.title }}</strong>
+        {% for line in a.lines %}<div class="small">{{ line }}</div>{% endfor %}
+        {% if a.trade_id %}<a class="small" href="/dashboard/operaciones/{{ a.trade_id }}">Ver operación</a>{% elif a.hypothesis_id %}<a class="small" href="/dashboard/trampas#p-{{ a.hypothesis_id }}">Ver trampa</a>{% endif %}
+      </td>
+      <td class="small nowrap">{{ a.delivery_text }}{% if a.delivery_attempts %} ({{ a.delivery_attempts }}){% endif %}{% if a.delivery_error %}<div class="muted">{{ a.delivery_error }}</div>{% endif %}</td>
+      <td class="nowrap">
+        {% if a.event == 'RESUELTA' %}
+        {% elif a.acknowledged_at %}<span class="muted small">reconocida {{ a.acknowledged_at | utc('%m-%d %H:%M') }}</span>
+        {% else %}
+        <form method="post" action="/dashboard/alertas/{{ a.id }}/reconocer" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="hidden" name="next" value="{{ next_url }}">
+          <button type="submit" class="btn btn-ghost btn-small">Reconocer</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">No hay alertas.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}

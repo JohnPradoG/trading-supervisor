@@ -15,11 +15,12 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | 4 · Bridge MT5 (EA Monitor) | Hecha: EA de solo lectura con cola en disco, ver [mt5/README.md](mt5/README.md) |
 | 5 · Registro de operaciones | Hecha: worker que convierte deals, SL/TP y fotos de posiciones en operaciones con riesgo, motivo de salida, MFE/MAE y reentradas |
 | 6 · Análisis | **Hecha**: análisis post-operación versionado (hechos medidos separados de hipótesis no validadas) y estadísticas con intervalos de confianza y avisos de muestra pequeña |
-| 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`; trampas (fase 9) y laboratorio (fase 10). Pendiente: alertas |
+| 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`; trampas (fase 9), laboratorio (fase 10) y alertas |
 | 8 · Trading DNA | **Hecha**: condiciones de mercado al entrar (tendencia por timeframe, indicadores, estructura, liquidez, FVG, order blocks, volatilidad, tiempo; noticias NULL hasta tener calendario), versionadas y sin lookahead, ver [docs/trading-dna.md](docs/trading-dna.md) |
 | 9 · Detección de patrones | **Hecha**: búsqueda de trampas (condiciones de entrada con expectativa negativa) y ventajas sobre el DNA y los hechos de la fase 6, con split cronológico congelado, FDR, validación y fuera de muestra evaluado una sola vez; página "Trampas" del dashboard e informe por versión, ver [Cómo se valida una trampa](#cómo-se-valida-una-trampa) |
 | 9.1 · Importar historial | **Hecha**: script de MT5 de solo lectura que envía velas M1 y todos los deals antiguos (marcados `importado`), despliegues con fechas pasadas y `supervisor-cli backfill`: DNA y trampas con datos desde el primer día, ver [Importar el historial](#importar-el-historial-de-mt5) |
 | 10 · Laboratorio | **Hecha**: experimentos numerados (#001) con su cambio documentado y revisiones de resultados de solo inserción, filtro contrafactual sobre operaciones reales con el split congelado de la fase 9 (titular fuera de muestra), importación del Strategy Tester (CSV de deals; HTML/XML tolerante) separada de lo real y comparación lado a lado de brazos y versiones, ver [Laboratorio](#laboratorio-fase-10) |
+| 15 · Alertas | **Hecha (mínima)**: motor en el worker con deduplicación, enfriamiento y resolución; TRAMPA_ACTIVA (operación nueva que cumple una trampa validada), trampas validadas y caducadas, EA sin latido; Telegram opcional; página "Alertas" con reconocimiento, ver [Alertas](#alertas) |
 | 11 · Machine Learning | Solo si los datos lo justifican: hace falta antes un volumen de operaciones cerradas que permita validar fuera de muestra (cientos por versión) y que las trampas validadas con reglas simples se queden cortas |
 
 ## Estructura
@@ -33,9 +34,11 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
   supervisor/analytics/ análisis post-operación (hechos, reglas de hipótesis), Trading DNA
                      (indicadores, estructura), métricas, patrones, filtro contrafactual
                      (lab.py) y lectura del Strategy Tester (backtest_report.py)
+  supervisor/alerts/ motor de alertas del worker (deduplicación, resolución) y Telegram
   supervisor/dashboard/ dashboard web: rutas, sesión/CSRF, plantillas Jinja2, htmx y Chart.js
   supervisor/cli.py  alta de cuentas, terminales y API keys; reprocess; trade-summary;
-                     analyze; dna; stats; patterns; backfill; experiment
+                     analyze; dna; stats; patterns; backfill; experiment; alerts;
+                     telegram setup-help
   migrations/        0001 esquema inicial · 0002 reglas de inmutabilidad (triggers)
                      0003 columnas del worker (event_time, reintentos, estado vivo)
                      0004 análisis versionado (hash de entradas, FACT/HYPOTHESIS)
@@ -44,6 +47,8 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
                      0007 origen de cada evento (EA en vivo o importación de historial)
                      0008 laboratorio: experimentos numerados e inmutables, revisiones de
                           resultados y backtests de solo inserción
+                     0009 alertas: clave de deduplicación, resolución, entrega a Telegram
+                          y reconocimiento (solo inserción salvo esas columnas)
   tests/             pruebas contra PostgreSQL real
 docs/                trading-dna.md (definición de cada variable del DNA), guía del VPS
 deploy/              Dockerfile, docker-compose.yml, Caddyfile, .env.example
@@ -64,7 +69,9 @@ mt5/                 EA Monitor de solo lectura (Experts/SupervisorMonitor.mq5),
   `data_splits`, `experiment_results` y `backtest_runs` no admiten UPDATE ni DELETE.
   `bots`, `deployments`, `trades`, `accounts`, `raw_events` y `experiments` no se pueden
   borrar. De `raw_events` solo cambian `status`, `attempts`, `processed_at`, `error` y
-  `next_attempt_at`; de `experiments`, solo el estado y la última conclusión.
+  `next_attempt_at`; de `experiments`, solo el estado y la última conclusión. `alerts` no se
+  borra y solo cambian sus columnas de entrega a Telegram y la fecha de reconocimiento (una
+  sola vez).
 - **Backtest ≠ real:** `backtest_runs.source` solo puede ser `BACKTEST` (CHECK) y un backtest
   nunca crea filas en `trades`.
 - **Hecho ≠ hipótesis:** un CHECK en `analysis_findings` impide que un FACT tenga confianza o
@@ -168,6 +175,8 @@ ts experiment list
 | `GET /v1/experiments/{n}/comparison` | admin | Brazos lado a lado (original, filtrado, candidata, backtests) por tramo, con curvas, avisos y trampas de cada versión |
 | `GET /v1/versions/compare?a=&b=` | admin | Dos versiones cualesquiera lado a lado (`symbol` opcional), con la diferencia de expectativa en R (Welch) |
 | `GET /v1/bots/{bot_id}/compare-versions` | admin | Métricas de cada versión del bot lado a lado, con avisos de muestra. Filtros: `symbol`, `account_id`, `source`, `from`/`to` |
+| `GET /v1/alerts` | admin | Últimas alertas. Filtros: `kind` (`TRAMPA_ACTIVA`, `PATRON_VALIDADO`, `PATRON_CADUCADO`, `EA_SIN_LATIDO`), `severity`, `unacknowledged`, `limit`. Ver [Alertas](#alertas) |
+| `POST /v1/alerts/{id}/ack` | admin | Reconocer una alerta (idempotente: se conserva la primera fecha) |
 | `/dashboard` | navegador (sesión) | Dashboard web de solo lectura, ver [Dashboard](#dashboard) |
 
 No existe ninguna ruta que envíe órdenes a MT5. La clave de idempotencia la calcula el
@@ -201,10 +210,12 @@ grep SUPERVISOR_ADMIN_TOKEN /opt/trading-supervisor/deploy/.env | cut -d= -f2
 | Detalle | Todos los campos, historia de eventos, gráfico de cierres M1 de entrada − 30 min a cierre + 30 min con entrada, SL/TP inicial y final y cierre, MFE/MAE, notas de calidad de datos, el análisis (fase 6) y el Trading DNA por secciones ("sin dato" con su motivo y cobertura de velas por timeframe) |
 | Bots | Bots → versiones → despliegues, con operaciones, win rate, neto y profit factor por versión (las estadísticas completas llegan con la Fase 6). Solo lectura: el registro sigue por API/CLI |
 | Laboratorio | Experimentos (#, título, bot base, estado, revisiones y titular: expectativa fuera de muestra original → filtrado) y formulario para comparar dos versiones. El detalle de cada experimento muestra su definición, la tabla lado a lado por tramo (fuera de muestra primero, dentro de muestra marcado como optimista), las curvas de neto acumulado de cada brazo, las trampas de cada versión y las revisiones. En Trampas, cada trampa validada tiene un botón **Crear experimento** (POST con token CSRF) que crea el experimento con el filtro "saltarse esas entradas" y calcula el contrafactual |
+| Alertas | Últimas 200 alertas con filtros por tipo, gravedad y "sin reconocer", estado de entrega a Telegram y botón **Reconocer** (POST con token CSRF; solo pone la fecha de reconocimiento). El menú muestra cuántas faltan por reconocer y el Resumen las trampas activas recientes. Ver [Alertas](#alertas) |
 | Sistema | Terminales y versión del EA, últimos 50 eventos FAILED con su error, operaciones sin despliegue agrupadas por cuenta + magic + símbolo (lo que falta registrar) |
 
 Funciona en el móvil (tablas con desplazamiento horizontal) y es de solo lectura: el único
-POST que escribe es "Crear experimento", y solo en las tablas del laboratorio. **Todas las
+POST que escribe es "Crear experimento", y solo en las tablas del laboratorio, además de
+"Reconocer" una alerta. **Todas las
 horas están en UTC** (elegir zona horaria queda fuera de esta fase).
 
 Seguridad:
@@ -512,6 +523,80 @@ Subida por el VPS sin tocar la API desde fuera:
 `docker compose exec -T api supervisor-cli experiment import-backtest --id 1 --file - --name deals.csv < deals.csv`.
 Caddy deja pasar hasta 10 MB solo en `/v1/experiments/*/backtests` (la API corta en 8 MB,
 `SUPERVISOR_LAB_UPLOAD_MAX_BYTES`); el resto sigue en 2 MB.
+
+## Alertas
+
+Las alertas **solo informan**: ninguna envía órdenes ni controla los bots. El worker las
+evalúa cada 20 s (y justo después de la búsqueda de patrones), las guarda todas en la tabla
+`alerts` (de solo inserción) y, si Telegram está configurado, las envía. Se ven en
+**https://TU_DOMINIO/dashboard/alertas**, por API (`GET /v1/alerts`) y con
+`supervisor-cli alerts list`.
+
+| Tipo | Gravedad | Cuándo |
+| --- | --- | --- |
+| `TRAMPA_ACTIVA` | crítica 🚨 | Una operación abierta en los últimos 60 min (`SUPERVISOR_ALERTS_TRAP_WINDOW_MINUTES`; no las importadas del historial) cuyo Trading DNA cumple una **trampa validada fuera de muestra** de su versión de bot (y de su símbolo, si la trampa es de un símbolo). Dice bot y versión, símbolo, dirección, precio de entrada, la trampa en palabras y sus números fuera de muestra (n, win rate, expectativa en R con su IC 95 %). Las candidatas no validadas **nunca** generan esta alerta |
+| `PATRON_VALIDADO` | aviso ⚠️ | La búsqueda de patrones valida una trampa nueva |
+| `PATRON_CADUCADO` | info ℹ️ | Una trampa validada pasa a caducada porque el forward la contradice |
+| `EA_SIN_LATIDO` | aviso ⚠️ | Un terminal lleva 5 min sin latido (`SUPERVISOR_ALERTS_HEARTBEAT_MINUTES`). No avisa en fin de semana (de viernes 21:00 a domingo 21:00 UTC, configurable). Cuando vuelve el latido llega un ✅ "Resuelta" |
+
+Cómo se evita el ruido:
+
+- **Deduplicación:** cada condición tiene una clave (p. ej. `EA_SIN_LATIDO:<terminal>` o
+  `TRAMPA_ACTIVA:<operación>:<trampa>`). Mientras sigue activa no se repite. Una operación y
+  una trampa avisan una sola vez.
+- **Resolución y enfriamiento:** las de sistema se cierran con una fila "RESUELTA" cuando la
+  condición desaparece, y no vuelven a dispararse antes de 60 min desde el último aviso
+  (`SUPERVISOR_ALERTS_COOLDOWN_MINUTES`).
+- **Al arrancar** no se avisa de todo el histórico: solo de trampas que cambiaron en los
+  últimos 7 días y de operaciones de la última hora.
+
+Limitación: al abrir una operación todavía no existe su análisis (se hace al cerrar), así que
+una trampa que dependa de un hecho del análisis (p. ej. "precio contra la EMA200 H1" de las
+reglas de la fase 6) no se puede comprobar al entrar y no genera `TRAMPA_ACTIVA`; las
+condiciones del Trading DNA (como la tendencia H1 relativa), la dirección y la reentrada sí.
+
+### Telegram paso a paso
+
+Sin Telegram todo funciona igual (las alertas se ven en el dashboard). Para recibirlas en el
+móvil (unos 5 minutos):
+
+1. **Crear el bot.** En Telegram busca **@BotFather** (con la marca azul de verificado),
+   escribe `/newbot` y responde: un nombre (p. ej. "Mi Supervisor") y un usuario que termine
+   en `bot` (p. ej. `mi_supervisor_alertas_bot`). BotFather te da un **token** como
+   `123456789:AAH...xyz`. Es una contraseña: no lo compartas.
+2. **Escribir al bot.** Abre el enlace `t.me/<usuario_de_tu_bot>` y pulsa **Iniciar** (un bot
+   no puede escribirte hasta que tú le escribes). Para un grupo: crea el grupo, añade el bot
+   y escribe un mensaje en el grupo.
+3. **Averiguar el chat id.** En el navegador abre
+   `https://api.telegram.org/botTOKEN/getUpdates` (cambiando `TOKEN` por el tuyo) y busca
+   `"chat":{"id": ...}`. Ese número es el chat id (en grupos empieza por `-100`). Si sale
+   `"result":[]`, vuelve a escribir al bot y recarga.
+4. **Configurar el VPS.** En `deploy/.env`:
+
+   ```bash
+   SUPERVISOR_TELEGRAM_BOT_TOKEN=123456789:AAH...xyz
+   SUPERVISOR_TELEGRAM_CHAT_ID=987654321
+   ```
+
+   y aplica: `docker compose up -d`.
+5. **Probar.** `docker compose exec api supervisor-cli alerts test` → debe llegarte "Prueba
+   del Trading Supervisor". Si falla, explica el motivo (token o chat id incorrectos, sin
+   conexión).
+
+Estas instrucciones también salen con `docker compose exec api supervisor-cli telegram
+setup-help`.
+
+Entrega: mensajes cortos en español (HTML escapado) con un emoji por gravedad y un enlace a
+la operación o a la trampa en el dashboard. Como mucho 10 por pasada y uno cada 1,1 s (límite
+de Telegram por chat). Cada alerta guarda su estado de entrega (`PENDING`, `SENT`, `FAILED`
+o `SKIPPED` si no hay Telegram) y sus intentos: si falla se reintenta a los 30 s, 60 s,
+120 s… (o lo que pida Telegram) y tras 5 intentos queda `FAILED`; un token o chat id
+incorrectos fallan a la primera. El token nunca se escribe en los logs ni en la base (se
+oculta en los errores).
+
+API (token de administración): `GET /v1/alerts?kind=TRAMPA_ACTIVA&severity=CRITICAL&unacknowledged=true`
+y `POST /v1/alerts/{id}/ack`. Reconocer solo pone la fecha (una vez; la base impide
+cambiarla o borrarla).
 
 ## Desarrollo y pruebas
 

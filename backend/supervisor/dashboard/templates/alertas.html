@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% from "partials/alertas.html" import alerts_table %}
+{% block title %}Alertas{% endblock %}
+{% block content %}
+<h1>Alertas</h1>
+<p class="muted">Las alertas solo informan: el supervisor nunca envía órdenes ni controla los bots.
+<strong>Trampa activa</strong> = una operación recién abierta cumple una trampa <em>validada fuera de muestra</em>
+de su bot. Las candidatas no validadas no generan alertas.
+{% if telegram %}Telegram está configurado.{% else %}Telegram no está configurado: las alertas solo se ven aquí (ver <code>supervisor-cli telegram setup-help</code>).{% endif %}</p>
+<form class="filters card" method="get" action="/dashboard/alertas">
+  <label>Tipo
+    <select name="tipo">
+      <option value="">Todos</option>
+      {% for k, label in kinds %}<option value="{{ k }}" {% if selected.tipo == k %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Gravedad
+    <select name="gravedad">
+      <option value="">Todas</option>
+      {% for k, label in severities %}<option value="{{ k }}" {% if selected.gravedad == k %}selected{% endif %}>{{ label }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Estado
+    <select name="pendientes">
+      <option value="">Todas</option>
+      <option value="1" {% if selected.pendientes %}selected{% endif %}>Sin reconocer</option>
+    </select>
+  </label>
+  <div class="filter-actions">
+    <button type="submit" class="btn">Filtrar</button>
+    <a class="btn btn-ghost" href="/dashboard/alertas">Limpiar</a>
+  </div>
+</form>
+<section class="card">
+  {{ alerts_table(alerts, csrf_token) }}
+</section>
+{% endblock %}
