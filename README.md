@@ -18,6 +18,7 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`. Pendiente: patrones, experimentos y alertas (llegan con sus fases) |
 | 8 · Trading DNA | **Hecha**: condiciones de mercado al entrar (tendencia por timeframe, indicadores, estructura, liquidez, FVG, order blocks, volatilidad, tiempo; noticias NULL hasta tener calendario), versionadas y sin lookahead, ver [docs/trading-dna.md](docs/trading-dna.md) |
 | 9 · Detección de patrones | **Hecha**: búsqueda de trampas (condiciones de entrada con expectativa negativa) y ventajas sobre el DNA y los hechos de la fase 6, con split cronológico congelado, FDR, validación y fuera de muestra evaluado una sola vez; página "Trampas" del dashboard e informe por versión, ver [Cómo se valida una trampa](#cómo-se-valida-una-trampa) |
+| 9.1 · Importar historial | **Hecha**: script de MT5 de solo lectura que envía velas M1 y todos los deals antiguos (marcados `importado`), despliegues con fechas pasadas y `supervisor-cli backfill`: DNA y trampas con datos desde el primer día, ver [Importar el historial](#importar-el-historial-de-mt5) |
 | 10 · Laboratorio | Siguiente |
 
 ## Estructura
@@ -32,18 +33,21 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
                      (indicadores, estructura) y métricas
   supervisor/dashboard/ dashboard web: rutas, sesión/CSRF, plantillas Jinja2, htmx y Chart.js
   supervisor/cli.py  alta de cuentas, terminales y API keys; reprocess; trade-summary;
-                     analyze; dna; stats; patterns
+                     analyze; dna; stats; patterns; backfill
   migrations/        0001 esquema inicial · 0002 reglas de inmutabilidad (triggers)
                      0003 columnas del worker (event_time, reintentos, estado vivo)
                      0004 análisis versionado (hash de entradas, FACT/HYPOTHESIS)
                      0005 Trading DNA versionado y catálogo de variables con tipos
                      0006 patrones: hipótesis con estado, pattern_runs, pruebas OOS únicas
+                     0007 origen de cada evento (EA en vivo o importación de historial)
   tests/             pruebas contra PostgreSQL real
 docs/                trading-dna.md (definición de cada variable del DNA), guía del VPS
 deploy/              Dockerfile, docker-compose.yml, Caddyfile, .env.example
 deploy/vps/          harden.sh (seguridad del VPS), install-docker.sh
 scripts/             backup.sh, restore.sh
-mt5/                 EA Monitor de solo lectura (SupervisorMonitor.mq5) y su guía
+mt5/                 EA Monitor de solo lectura (Experts/SupervisorMonitor.mq5), script de
+                     importación del historial (Scripts/SupervisorImportHistory.mq5), código
+                     común (Include/Supervisor/SupervisorComun.mqh) y su guía
 ```
 
 ## Qué garantiza la base de datos (no solo el código)
@@ -118,6 +122,8 @@ ts stats --symbol USTEC_x100 --from 2026-10-01 --group-by session,direction
 ts stats --bot EA_Nasdaq_FVG_Retest --group-by dna:tendencia_h1_rel   # por una variable del DNA
 ts patterns --version <bot_version_id>          # buscar/validar trampas e imprimir el informe
 ts patterns --version <bot_version_id> --symbol USTEC_x100 --report-only   # solo el informe
+ts backfill                                     # completar operaciones antiguas (tras importar historial)
+ts backfill --from 2026-01-01 --page-size 200   # por rango; reanudar con --after-time/--after-id
 ```
 
 ## API
@@ -125,13 +131,14 @@ ts patterns --version <bot_version_id> --symbol USTEC_x100 --report-only   # sol
 | Ruta | Quién | Para qué |
 | --- | --- | --- |
 | `GET /health` | cualquiera | Estado de la API y la base de datos |
-| `POST /v1/ingest/events` | EA (`X-API-Key`) | Lote de eventos `DEAL`, `POSITION_MODIFY`, `POSITIONS_SNAPSHOT`. Responde `accepted`, `duplicate` o `rejected` por evento |
+| `POST /v1/ingest/events` | EA (`X-API-Key`) | Lote de eventos `DEAL`, `POSITION_MODIFY`, `POSITIONS_SNAPSHOT`. Responde `accepted`, `duplicate` o `rejected` por evento. `origin` opcional: `"ea"` (por defecto) o `"history_import"` (script de importación) |
 | `POST /v1/ingest/heartbeat` | EA | Latido del terminal |
 | `POST /v1/ingest/account-snapshot` | EA | Balance, equity y margen |
 | `POST /v1/ingest/bars` | EA | Velas M1 cerradas |
 | `GET/POST /v1/bots`, `GET/PATCH /v1/bots/{id}` | admin (`Bearer`) | Bots |
 | `POST /v1/bots/{id}/versions` | admin | Nueva versión (inmutable; repetir una versión da 409) |
-| `POST /v1/deployments`, `POST /v1/deployments/{id}/end` | admin | Qué versión corre con qué magic en qué cuenta y símbolo |
+| `POST /v1/deployments`, `POST /v1/deployments/{id}/end` | admin | Qué versión corre con qué magic en qué cuenta y símbolo. `started_at` puede ser pasado y `ended_at` opcional registra un periodo ya terminado; un periodo que se cruce con otro del mismo magic, cuenta y símbolo da 409 |
+| `POST /v1/admin/backfill` | admin | Una página acotada (`limit` ≤ 200, `entry_from`/`entry_to` opcionales) del backfill; devuelve `stats` y el cursor `next` para pedir la siguiente. Para recorrerlo todo es mejor `supervisor-cli backfill` |
 | `GET /v1/raw-events` | admin | Últimos eventos recibidos |
 | `GET /v1/trades` | admin | Operaciones, más recientes primero. Filtros: `bot_id`, `version_id`, `symbol`, `status` (`OPEN`/`CLOSED`), `from`/`to` (hora de entrada, UTC), `limit` (≤ 500), `offset` |
 | `GET /v1/trades/{trade_id}` | admin | Una operación con toda su historia (`events`) |
@@ -247,11 +254,47 @@ de solo inserción):
   en dinero con el volumen inicial (como el riesgo). Si faltan velas calcula con las que hay y
   deja la cobertura y los huecos en `data_quality.excursion`; cada 5 min un repaso recalcula
   las de los últimos 7 días si llegan más velas.
+- **Importación de historial:** los eventos de un lote con `origin: "history_import"` se
+  guardan con `origin = HISTORY_IMPORT`. Cada lote del worker toma primero los del EA en vivo y
+  con lo que sobra, como mucho 20 de la importación (`SUPERVISOR_WORKER_IMPORT_BATCH_SIZE`):
+  miles de deals antiguos nunca retrasan lo que pasa ahora. Las operaciones que nacen de ellos
+  llevan `data_quality.importado = true`.
 - **Parada:** con `SIGTERM` termina el lote en curso y sale. Logs en JSON por stdout.
 
 Un backup que solo vive en el VPS no protege si se pierde el VPS: copia
 `/var/backups/trading-supervisor` a otro sitio (por ejemplo con `rclone` a Google Drive) y
 prueba una restauración con `scripts/restore.sh <archivo.dump>`.
+
+## Importar el historial de MT5
+
+Sin importar nada, la búsqueda de trampas necesita esperar a que se cierren al menos 100
+operaciones nuevas. El script `mt5/Scripts/SupervisorImportHistory.mq5` (paso a paso en
+[mt5/README.md](mt5/README.md#importar-el-historial-una-vez)) se ejecuta **una vez** en MT5 y
+envía, con la misma API key del EA:
+
+1. **Velas M1 primero**, de cada símbolo del historial, desde el primer deal menos 45 días de
+   calentamiento hasta ahora, en envíos de 3 días (≤ 4320 velas, ~650 KB: dentro del límite de
+   5000 del servidor y de los 2 MB de Caddy). Escribe cuántas velas tenía MT5 y cómo conseguir
+   más si faltan. El servidor las inserta en bloque y descarta las que ya tenía.
+2. **Deals después**, en lotes de ≤ 500 con el JSON exacto del EA (`SupervisorComun.mqh`) más
+   `balance_after` reconstruido desde el balance actual, y `origin: "history_import"`. Sin
+   fotos de cuenta inventadas.
+
+Repetirlo es seguro (las claves de idempotencia son las mismas que las del EA). Después:
+
+1. Registrar los **despliegues históricos** (`started_at` pasado y `ended_at` si ya terminó;
+   los solapes se rechazan con 409).
+2. `supervisor-cli backfill`: recorre las operaciones por hora de entrada en páginas (cada una
+   en su transacción y cada operación en un savepoint), asigna las que no tienen despliegue y
+   rehace MFE/MAE, riesgo, Trading DNA y análisis cuando falta o cambió su entrada (p. ej. el
+   timeframe principal del bot ahora conocido). Idempotente y reanudable. También existe
+   `POST /v1/admin/backfill` (una página por petición), pero la CLI es la vía recomendada.
+3. `supervisor-cli patterns --version <id>` para buscar trampas con todo el historial.
+
+Las operaciones importadas son reales (cuenta REAL → `LIVE`) y cuentan en estadísticas y
+patrones; se distinguen con `data_quality.importado = true`. No tienen cambios de SL/TP
+intermedios ni fotos de balance. **Hora:** el desfase servidor-UTC de hoy se aplica a todo el
+historial; con Exness (GMT+0, sin horario de verano) es exacto.
 
 ## Análisis post-operación (fase 6)
 

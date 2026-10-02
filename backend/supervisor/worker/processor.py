@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from supervisor.config import Settings
 from supervisor.models import Account, RawEvent, Terminal
-from supervisor.models.enums import RawEventStatus
+from supervisor.models.enums import RawEventOrigin, RawEventStatus
 from supervisor.schemas.ingest import (
     SCHEMA_VERSION,
     DealEvent,
@@ -120,29 +120,52 @@ def process_event(
     return result
 
 
+def _ready(now: datetime, origin: RawEventOrigin, limit: int):
+    return (
+        select(RawEvent)
+        .where(
+            RawEvent.status == RawEventStatus.PENDING,
+            RawEvent.origin == origin,
+            or_(RawEvent.next_attempt_at.is_(None), RawEvent.next_attempt_at <= now),
+        )
+        .order_by(RawEvent.event_time, RawEvent.id)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+
+
 def process_batch(
     session_factory: sessionmaker[Session], settings: Settings, now: datetime | None = None
 ) -> Counter:
     """Toma hasta worker_batch_size eventos PENDING listos, por hora del hecho, y los procesa
     en una transacción (un savepoint por evento). Devuelve el recuento por resultado; la clave
-    "selected" es el total tomado."""
+    "selected" es el total tomado y "more" vale 1 si quedó trabajo listo (lote lleno).
+
+    Prioridad: primero los eventos del EA en vivo; con lo que sobra del lote, como mucho
+    worker_import_batch_size eventos de una importación de historial. Así una importación de
+    miles de deals (cada apertura calcula su DNA) nunca retrasa lo que pasa ahora: el EA en
+    vivo espera como mucho un lote corto de importación. Mezclar ambos órdenes es seguro: son
+    posiciones distintas salvo una que siga abierta desde antes de la importación, y un cierre
+    en vivo que llegue antes que su apertura importada queda en espera y se reactiva en cuanto
+    se procesa la apertura (como cualquier deal fuera de orden)."""
     now = now or datetime.now(UTC)
     stats: Counter = Counter()
     with session_factory() as session, session.begin():
-        rows = session.scalars(
-            select(RawEvent)
-            .where(
-                RawEvent.status == RawEventStatus.PENDING,
-                or_(RawEvent.next_attempt_at.is_(None), RawEvent.next_attempt_at <= now),
-            )
-            .order_by(RawEvent.event_time, RawEvent.id)
-            .limit(settings.worker_batch_size)
-            .with_for_update(skip_locked=True)
-        ).all()
-        stats["selected"] = len(rows)
+        live = session.scalars(_ready(now, RawEventOrigin.EA, settings.worker_batch_size)).all()
+        room = min(settings.worker_batch_size - len(live), settings.worker_import_batch_size)
+        imported = (
+            session.scalars(_ready(now, RawEventOrigin.HISTORY_IMPORT, room)).all()
+            if room > 0
+            else []
+        )
+        stats["selected"] = len(live) + len(imported)
+        if len(live) >= settings.worker_batch_size or (imported and len(imported) >= room):
+            stats["more"] = 1
         cache: dict = {}
-        for raw in rows:
+        for raw in [*live, *imported]:
             stats[process_event(session, raw, settings, now, cache)] += 1
+        if imported:
+            stats["importados"] = len(imported)
     return stats
 
 

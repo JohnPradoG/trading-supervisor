@@ -3,9 +3,10 @@
 import hashlib
 import json
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -104,18 +105,63 @@ def list_deployments(session: Session, bot_id: uuid.UUID) -> list[Deployment]:
     )
 
 
+def _overlapping(
+    session: Session,
+    account_id: uuid.UUID,
+    magic_number: int,
+    symbol: str,
+    started_at: datetime,
+    ended_at: datetime | None,
+    exclude: uuid.UUID | None = None,
+) -> Deployment | None:
+    """Despliegue del mismo magic, cuenta y símbolo cuyo periodo [inicio, fin) se cruza con el
+    dado (fin NULL = sigue activo). Periodos que solo se tocan (uno acaba cuando empieza el
+    otro) no se cruzan: la asignación usa started_at <= entrada < ended_at."""
+    conds = [
+        Deployment.account_id == account_id,
+        Deployment.magic_number == magic_number,
+        Deployment.symbol == symbol,
+        or_(Deployment.ended_at.is_(None), Deployment.ended_at > started_at),
+    ]
+    if ended_at is not None:
+        conds.append(Deployment.started_at < ended_at)
+    if exclude is not None:
+        conds.append(Deployment.id != exclude)
+    return session.scalar(select(Deployment).where(*conds).order_by(Deployment.started_at).limit(1))
+
+
+def _period(deployment: Deployment) -> str:
+    end = deployment.ended_at.isoformat() if deployment.ended_at else "sin fin (activo)"
+    return f"{deployment.started_at.isoformat()} - {end}"
+
+
 def create_deployment(session: Session, data: DeploymentCreate) -> Deployment:
     if session.get(BotVersion, data.bot_version_id) is None:
         raise NotFound("versión de bot no encontrada")
+    # La fila de la cuenta queda bloqueada hasta el commit: dos altas simultáneas de la misma
+    # cuenta se serializan y la comprobación de solapes no tiene carreras.
     account = session.scalar(
-        select(Account).where(
-            Account.server == data.account_server, Account.login == data.account_login
-        )
+        select(Account)
+        .where(Account.server == data.account_server, Account.login == data.account_login)
+        .with_for_update()
     )
     if account is None:
         raise NotFound(
             f"cuenta {data.account_login} en {data.account_server} no registrada; "
             "créala con la CLI (create-account)"
+        )
+    clash = _overlapping(
+        session, account.id, data.magic_number, data.symbol, data.started_at, data.ended_at
+    )
+    if clash is not None:
+        hint = (
+            "termina el anterior antes de crear uno nuevo"
+            if clash.ended_at is None and clash.started_at <= data.started_at
+            else "ajusta las fechas para que los periodos no se crucen"
+        )
+        raise Conflict(
+            f"el magic {data.magic_number} ya tiene un despliegue en {data.symbol} para esa "
+            f"cuenta que se cruza con estas fechas ({_period(clash)}); {hint}"
         )
     deployment = Deployment(
         bot_version_id=data.bot_version_id,
@@ -123,6 +169,7 @@ def create_deployment(session: Session, data: DeploymentCreate) -> Deployment:
         symbol=data.symbol,
         magic_number=data.magic_number,
         started_at=data.started_at,
+        ended_at=data.ended_at,
         notes=data.notes,
     )
     session.add(deployment)

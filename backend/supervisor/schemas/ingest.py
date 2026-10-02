@@ -179,13 +179,18 @@ trading_event_adapter: TypeAdapter[TradingEvent] = TypeAdapter(TradingEvent)
 
 
 class EventBatch(BaseModel):
-    """Lote enviado por el EA. Los eventos se validan uno por uno en el servicio."""
+    """Lote enviado por el EA. Los eventos se validan uno por uno en el servicio.
+
+    `origin` es opcional para que el EA siga siendo compatible: sin él, el lote es del EA en
+    vivo; el script de importación de historial envía "history_import" y las operaciones que
+    nacen de esos eventos quedan marcadas con data_quality.importado."""
 
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1]
     sent_at: UtcDatetime
     ea_version: str = Field(min_length=1, max_length=32)
+    origin: Literal["ea", "history_import"] = "ea"
     events: list[dict] = Field(min_length=1)
 
 

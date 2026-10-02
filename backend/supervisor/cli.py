@@ -13,6 +13,7 @@
     ts dna --trade <trade_id> | --all
     ts stats [--bot EA_Nasdaq_FVG_Retest] [--group-by version,session] [--from 2026-10-01]
     ts patterns --version <bot_version_id> [--symbol USTEC_x100] [--report-only]
+    ts backfill [--from 2026-01-01] [--page-size 200]
 
 Las cuentas y las API keys se crean aquí y no por HTTP: así una API key comprometida o un
 token de administración filtrado no permiten fabricar credenciales nuevas.
@@ -40,6 +41,7 @@ from supervisor.services import patterns as patterns_service
 from supervisor.services import stats as stats_service
 from supervisor.services.errors import ServiceError
 from supervisor.services.trades import summary
+from supervisor.worker.backfill import backfill_page
 
 
 def _account(session, server: str, login: int) -> Account:
@@ -510,6 +512,44 @@ def patterns(args: argparse.Namespace) -> None:
     print_report(report)
 
 
+def backfill(args: argparse.Namespace) -> None:
+    """Completa operaciones antiguas (tras importar el historial o registrar despliegues con
+    fechas pasadas): despliegue, MFE/MAE, riesgo, Trading DNA y análisis. Por páginas, cada
+    una en su transacción; repetirlo no duplica nada y salta lo que ya está hecho."""
+    settings = get_settings()
+    if (args.after_time is None) != (args.after_id is None):
+        sys.exit("--after-time y --after-id van juntos (el cursor que imprime cada página).")
+    after = (args.after_time, args.after_id) if args.after_time else None
+    totals: Counter = Counter()
+    pages = 0
+    while True:
+        with session_scope() as session:
+            page = backfill_page(
+                session, settings, after, args.page_size, args.date_from, args.date_to
+            )
+        pages += 1
+        totals.update(page.stats)
+        done = ", ".join(f"{k} {v}" for k, v in sorted(page.stats.items()) if v)
+        cursor = (
+            f" · seguir con --after-time {page.next_cursor[0].isoformat()} "
+            f"--after-id {page.next_cursor[1]}"
+            if page.next_cursor
+            else ""
+        )
+        print(f"Página {pages}: {done or 'nada'}{cursor}", flush=True)
+        if page.next_cursor is None or (args.max_pages and pages >= args.max_pages):
+            break
+        after = page.next_cursor
+    print(
+        f"Backfill: {totals['revisadas']} operaciones revisadas, {totals['asignadas']} "
+        f"asignadas a un despliegue, {totals['excursiones']} MFE/MAE, {totals['riesgos']} "
+        f"riesgos, {totals['dna']} DNA y {totals['analisis']} análisis nuevos, "
+        f"{totals['errores']} errores."
+    )
+    if totals["asignadas"]:
+        print("Hay operaciones nuevas en versiones de bot: ejecuta `patterns --version <id>`.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="supervisor-cli", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -582,6 +622,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-only", action="store_true", help="solo el informe, sin ejecutar la búsqueda"
     )
     p.set_defaults(func=patterns)
+
+    p = sub.add_parser(
+        "backfill",
+        help="completar operaciones antiguas: despliegue, MFE/MAE, riesgo, DNA y análisis",
+    )
+    p.add_argument("--from", dest="date_from", type=_date, help="hora de entrada desde (UTC)")
+    p.add_argument("--to", dest="date_to", type=_date, help="hora de entrada hasta (UTC)")
+    p.add_argument("--page-size", type=int, default=200, help="operaciones por página (≤ 500)")
+    p.add_argument("--max-pages", type=int, default=0, help="parar tras N páginas (0 = todas)")
+    p.add_argument("--after-time", type=_date, help="reanudar: cursor impreso (hora)")
+    p.add_argument("--after-id", type=_uuid, help="reanudar: cursor impreso (trade_id)")
+    p.set_defaults(func=backfill)
     return parser
 
 
