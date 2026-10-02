@@ -2,7 +2,9 @@
 contrafactual. Todos los archivos de estas pruebas están CONSTRUIDOS a mano con el formato de
 las tablas del probador de MT5 (columnas y etiquetas reales); no son exportaciones reales."""
 
+import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +12,7 @@ from supervisor.analytics import backtest_report as bt
 from supervisor.analytics import lab
 from supervisor.analytics import patterns as pt
 from supervisor.analytics.statistics import StatsParams, TradeResult
+from supervisor.config import Settings
 
 HEADER_EN = [
     "Time",
@@ -265,3 +268,16 @@ def test_equity_curve_downsampling_keeps_last_point() -> None:
         int((T0 + timedelta(minutes=4)).timestamp() * 1000),
         5,
     ]
+
+
+def test_caddy_allows_bigger_body_only_for_backtest_uploads() -> None:
+    """Caddy: 2 MB para todo (EA, API, dashboard) y 10 MB solo en la subida de backtests, por
+    encima del límite de la API (lab_upload_max_bytes)."""
+    caddy = (Path(__file__).resolve().parents[3] / "deploy" / "Caddyfile").read_text()
+    route = r"\^/v1/experiments/\[\^/\]\+/backtests\$"
+    assert re.search(r"@subida_backtest path_regexp " + route, caddy)
+    assert re.search(r"not path_regexp " + route, caddy)
+    assert re.search(r"request_body @subida_backtest \{\s*max_size 10MB", caddy)
+    assert re.search(r"request_body @resto \{\s*max_size 2MB", caddy)
+    settings = Settings(database_url="postgresql://x/y", admin_token="t" * 48)
+    assert settings.lab_upload_max_bytes < 10 * 1024 * 1024

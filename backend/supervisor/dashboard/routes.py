@@ -519,12 +519,14 @@ def laboratorio(request: Request, dash: DashSession, session: SessionDep) -> HTM
     return _render(request, "laboratorio.html", context, dash)
 
 
-def _compare_pair(session, settings, a: str | None, b: str | None, symbol: str | None):
+def _compare_pair(
+    session, settings, a: str | None, b: str | None, symbol: str | None, samples: int | None = None
+):
     va, vb = _parse_uuid(a), _parse_uuid(b)
     if va is None or vb is None:
         raise ServiceError("Elige dos versiones distintas.")
     return lab_svc.compare_two_versions(
-        session, settings, va, vb, (symbol or "").strip()[:64] or None
+        session, settings, va, vb, (symbol or "").strip()[:64] or None, samples
     )
 
 
@@ -569,7 +571,7 @@ def comparar_curvas(
     symbol: str | None = None,
 ) -> JSONResponse:
     try:
-        pair = _compare_pair(session, settings, a, b, symbol)
+        pair = _compare_pair(session, settings, a, b, symbol, samples=0)
     except ServiceError as exc:
         return JSONResponse({"detail": exc.message}, status_code=exc.status_code)
     return JSONResponse(
@@ -629,7 +631,7 @@ def experimento_curvas(
         exp = lab_svc.get_experiment(session, number)
     except NotFound:
         return JSONResponse({"detail": "experimento no encontrado"}, status_code=404)
-    comparison = lab_svc.experiment_comparison(session, settings, exp)
+    comparison = lab_svc.experiment_comparison(session, settings, exp, samples=0)
     return JSONResponse(
         {"series": _series(comparison["brazos"])}, headers={"Cache-Control": "no-store"}
     )

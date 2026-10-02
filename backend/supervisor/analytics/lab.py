@@ -206,32 +206,42 @@ def _percentile(sorted_values: list[float], q: float) -> float:
     return sorted_values[low] + (sorted_values[high] - sorted_values[low]) * (index - low)
 
 
+# Trabajo máximo del bootstrap por serie (remuestreos x operaciones): con muchas operaciones
+# se usan menos remuestreos (nunca menos de 100) para que una página no tarde segundos en el
+# VPS de 1 vCPU. El número usado se devuelve en "remuestreos".
+BOOTSTRAP_BUDGET = 1_500_000
+MIN_BOOTSTRAP = 100
+
+
 def bootstrap_intervals(
     results: Sequence[TradeResult], params: StatsParams, samples: int, seed: int
 ) -> dict[str, Any]:
     """IC95 percentil del profit factor y del drawdown máximo (dinero) por remuestreo con
     reemplazo. Con < 10 operaciones o samples = 0 no se calculan. El profit factor solo si es
     finito en al menos el 90 % de los remuestreos."""
-    out: dict[str, Any] = {"profit_factor_ic95": None, "max_drawdown_ic95": None}
+    out: dict[str, Any] = {"profit_factor_ic95": None, "max_drawdown_ic95": None, "remuestreos": 0}
     n = len(results)
     if samples <= 0 or n < 10:
         return out
+    samples = min(samples, max(MIN_BOOTSTRAP, BOOTSTRAP_BUDGET // n))
+    out["remuestreos"] = samples
     outcomes = [
         classify_outcome(r.net, r.risk, r.commission, params.breakeven_r_fraction).outcome
         for r in results
     ]
     nets = [r.net for r in results]
+    gains_of = [net if o == Outcome.WIN else 0.0 for net, o in zip(nets, outcomes, strict=True)]
+    losses_of = [-net if o == Outcome.LOSS else 0.0 for net, o in zip(nets, outcomes, strict=True)]
     rng = random.Random(seed)
+    population = range(n)
     pfs: list[float] = []
     dds: list[float] = []
     for _ in range(samples):
-        idx = [rng.randrange(n) for _ in range(n)]
-        sample = [nets[i] for i in idx]
-        gains = sum(nets[i] for i in idx if outcomes[i] == Outcome.WIN)
-        losses = -sum(nets[i] for i in idx if outcomes[i] == Outcome.LOSS)
+        idx = rng.choices(population, k=n)
+        losses = sum(losses_of[i] for i in idx)
         if losses > 0:
-            pfs.append(gains / losses)
-        dds.append(max_drawdown(sample)[0])
+            pfs.append(sum(gains_of[i] for i in idx) / losses)
+        dds.append(max_drawdown([nets[i] for i in idx])[0])
     dds.sort()
     out["max_drawdown_ic95"] = [
         round(_percentile(dds, 0.025), 2),

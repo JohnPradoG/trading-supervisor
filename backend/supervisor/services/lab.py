@@ -633,11 +633,15 @@ def version_traps(session: Session, version_id: uuid.UUID, symbol: str | None) -
 
 
 def _segment_metrics(
-    results_by_segment: dict[str, list[TradeResult]], settings: Settings, salt: str
+    results_by_segment: dict[str, list[TradeResult]],
+    settings: Settings,
+    salt: str,
+    samples: int | None = None,
 ) -> dict[str, Any]:
     params = stats_svc.params_from(settings)
+    samples = settings.lab_bootstrap_samples if samples is None else samples
     return {
-        name: lab.summary_metrics(items, params, settings.lab_bootstrap_samples, salt)
+        name: lab.summary_metrics(items, params, samples, salt)
         for name, items in results_by_segment.items()
     }
 
@@ -657,6 +661,7 @@ def version_arm(
     symbol: str | None,
     key: str,
     split: lab.Split | None = None,
+    samples: int | None = None,
 ) -> tuple[dict[str, Any], list[TradeResult]]:
     """Brazo de una versión: todas sus operaciones reales cerradas (no backtest)."""
     _version(session, version_id)
@@ -670,7 +675,7 @@ def version_arm(
     if split is not None:
         parts[lab.IN_SAMPLE] = [r for r in results if r.close_time <= split.validation_end]
         parts[lab.OUT_OF_SAMPLE] = [r for r in results if r.close_time > split.validation_end]
-    metrics = _segment_metrics(parts, settings, key)
+    metrics = _segment_metrics(parts, settings, key, samples)
     arm = {
         "clave": key,
         "etiqueta": version_label(session, version_id),
@@ -708,10 +713,12 @@ def _backtest_arm(session: Session, settings: Settings, run: BacktestRun) -> dic
     }
 
 
-def experiment_comparison(session: Session, settings: Settings, exp: Experiment) -> dict[str, Any]:
+def experiment_comparison(
+    session: Session, settings: Settings, exp: Experiment, samples: int | None = None
+) -> dict[str, Any]:
     """Brazos del experimento lado a lado, calculados con los datos de ahora (sin guardar
     nada): original y filtrado (mismas operaciones que el contrafactual), versión candidata
-    (operaciones reales) y backtests importados."""
+    (operaciones reales) y backtests importados. `samples` = 0 omite el bootstrap (curvas)."""
     split = _split_for(session, exp)
     arms: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -722,7 +729,10 @@ def experiment_comparison(session: Session, settings: Settings, exp: Experiment)
 
     def arm(key: str, label: str, source: str, chosen: dict[str, list[lab.LabTrade]]) -> dict:
         metrics = _segment_metrics(
-            {name: [t.result for t in items] for name, items in chosen.items()}, settings, key
+            {name: [t.result for t in items] for name, items in chosen.items()},
+            settings,
+            key,
+            samples,
         )
         return {
             "clave": key,
@@ -757,7 +767,7 @@ def experiment_comparison(session: Session, settings: Settings, exp: Experiment)
         )
     if exp.candidate_version_id is not None:
         candidate, _ = version_arm(
-            session, settings, exp.candidate_version_id, exp.symbol, "candidata"
+            session, settings, exp.candidate_version_id, exp.symbol, "candidata", None, samples
         )
         candidate["etiqueta"] = f"Candidata · {candidate['etiqueta']}"
         arms.append(candidate)
@@ -792,14 +802,15 @@ def compare_two_versions(
     version_a: uuid.UUID,
     version_b: uuid.UUID,
     symbol: str | None = None,
+    samples: int | None = None,
 ) -> dict[str, Any]:
     """Sección 13: dos versiones cualesquiera (del mismo bot o no) lado a lado, con sus
     operaciones reales, avisos de muestra, trampas de cada una y la diferencia de expectativa
     en R (Welch) cuando las dos tienen riesgo conocido."""
     if version_a == version_b:
         raise ServiceError("elige dos versiones distintas")
-    arm_a, res_a = version_arm(session, settings, version_a, symbol, "a")
-    arm_b, res_b = version_arm(session, settings, version_b, symbol, "b")
+    arm_a, res_a = version_arm(session, settings, version_a, symbol, "a", None, samples)
+    arm_b, res_b = version_arm(session, settings, version_b, symbol, "b", None, samples)
     r_a = [r.net / r.risk for r in res_a if r.risk]
     r_b = [r.net / r.risk for r in res_b if r.risk]
     welch = pt.welch_test(r_b, r_a)

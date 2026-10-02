@@ -10,16 +10,17 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | Fase | Estado |
 | --- | --- |
 | 1 · Arquitectura | Aprobada |
-| 2 · Base de datos | Hecha: 25 tablas (26 con `pattern_runs` de la fase 9), migraciones Alembic, reglas de inmutabilidad, backups |
+| 2 · Base de datos | Hecha: 25 tablas (27 con `pattern_runs` de la fase 9 y `experiment_results` de la 10), migraciones Alembic, reglas de inmutabilidad, backups |
 | 3 · API | Hecha: ingesta idempotente, API keys por terminal, registro de bots, HTTPS con Caddy |
 | 4 · Bridge MT5 (EA Monitor) | Hecha: EA de solo lectura con cola en disco, ver [mt5/README.md](mt5/README.md) |
 | 5 · Registro de operaciones | Hecha: worker que convierte deals, SL/TP y fotos de posiciones en operaciones con riesgo, motivo de salida, MFE/MAE y reentradas |
 | 6 · Análisis | **Hecha**: análisis post-operación versionado (hechos medidos separados de hipótesis no validadas) y estadísticas con intervalos de confianza y avisos de muestra pequeña |
-| 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`. Pendiente: patrones, experimentos y alertas (llegan con sus fases) |
+| 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`; trampas (fase 9) y laboratorio (fase 10). Pendiente: alertas |
 | 8 · Trading DNA | **Hecha**: condiciones de mercado al entrar (tendencia por timeframe, indicadores, estructura, liquidez, FVG, order blocks, volatilidad, tiempo; noticias NULL hasta tener calendario), versionadas y sin lookahead, ver [docs/trading-dna.md](docs/trading-dna.md) |
 | 9 · Detección de patrones | **Hecha**: búsqueda de trampas (condiciones de entrada con expectativa negativa) y ventajas sobre el DNA y los hechos de la fase 6, con split cronológico congelado, FDR, validación y fuera de muestra evaluado una sola vez; página "Trampas" del dashboard e informe por versión, ver [Cómo se valida una trampa](#cómo-se-valida-una-trampa) |
 | 9.1 · Importar historial | **Hecha**: script de MT5 de solo lectura que envía velas M1 y todos los deals antiguos (marcados `importado`), despliegues con fechas pasadas y `supervisor-cli backfill`: DNA y trampas con datos desde el primer día, ver [Importar el historial](#importar-el-historial-de-mt5) |
-| 10 · Laboratorio | Siguiente |
+| 10 · Laboratorio | **Hecha**: experimentos numerados (#001) con su cambio documentado y revisiones de resultados de solo inserción, filtro contrafactual sobre operaciones reales con el split congelado de la fase 9 (titular fuera de muestra), importación del Strategy Tester (CSV de deals; HTML/XML tolerante) separada de lo real y comparación lado a lado de brazos y versiones, ver [Laboratorio](#laboratorio-fase-10) |
+| 11 · Machine Learning | Solo si los datos lo justifican: hace falta antes un volumen de operaciones cerradas que permita validar fuera de muestra (cientos por versión) y que las trampas validadas con reglas simples se queden cortas |
 
 ## Estructura
 
@@ -30,16 +31,19 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
   supervisor/services/ lógica de ingesta, registro, consulta, estadísticas y dashboard
   supervisor/worker/ worker de operaciones: raw_events -> trades + trade_events (+ análisis)
   supervisor/analytics/ análisis post-operación (hechos, reglas de hipótesis), Trading DNA
-                     (indicadores, estructura) y métricas
+                     (indicadores, estructura), métricas, patrones, filtro contrafactual
+                     (lab.py) y lectura del Strategy Tester (backtest_report.py)
   supervisor/dashboard/ dashboard web: rutas, sesión/CSRF, plantillas Jinja2, htmx y Chart.js
   supervisor/cli.py  alta de cuentas, terminales y API keys; reprocess; trade-summary;
-                     analyze; dna; stats; patterns; backfill
+                     analyze; dna; stats; patterns; backfill; experiment
   migrations/        0001 esquema inicial · 0002 reglas de inmutabilidad (triggers)
                      0003 columnas del worker (event_time, reintentos, estado vivo)
                      0004 análisis versionado (hash de entradas, FACT/HYPOTHESIS)
                      0005 Trading DNA versionado y catálogo de variables con tipos
                      0006 patrones: hipótesis con estado, pattern_runs, pruebas OOS únicas
                      0007 origen de cada evento (EA en vivo o importación de historial)
+                     0008 laboratorio: experimentos numerados e inmutables, revisiones de
+                          resultados y backtests de solo inserción
   tests/             pruebas contra PostgreSQL real
 docs/                trading-dna.md (definición de cada variable del DNA), guía del VPS
 deploy/              Dockerfile, docker-compose.yml, Caddyfile, .env.example
@@ -56,11 +60,13 @@ mt5/                 EA Monitor de solo lectura (Experts/SupervisorMonitor.mq5),
   por MT5 se descarta con `ON CONFLICT DO NOTHING`. `trades(account_id, position_id)` y
   `trade_events(trade_id, deal_ticket)` son únicos como segunda barrera.
 - **Historia inmutable:** `bot_versions`, `trade_events`, `trade_analyses`,
-  `analysis_findings`, `trade_dna`, `feature_definitions`, `pattern_tests`, `pattern_runs` y
-  `data_splits` no admiten UPDATE ni DELETE.
-  `bots`, `deployments`, `trades`, `accounts` y `raw_events` no se pueden borrar. De
-  `raw_events` solo cambian `status`, `attempts`, `processed_at`, `error` y
-  `next_attempt_at`.
+  `analysis_findings`, `trade_dna`, `feature_definitions`, `pattern_tests`, `pattern_runs`,
+  `data_splits`, `experiment_results` y `backtest_runs` no admiten UPDATE ni DELETE.
+  `bots`, `deployments`, `trades`, `accounts`, `raw_events` y `experiments` no se pueden
+  borrar. De `raw_events` solo cambian `status`, `attempts`, `processed_at`, `error` y
+  `next_attempt_at`; de `experiments`, solo el estado y la última conclusión.
+- **Backtest ≠ real:** `backtest_runs.source` solo puede ser `BACKTEST` (CHECK) y un backtest
+  nunca crea filas en `trades`.
 - **Hecho ≠ hipótesis:** un CHECK en `analysis_findings` impide que un FACT tenga confianza o
   soportes y que una HYPOTHESIS no tenga confianza, versión de regla y hechos de apoyo.
 - **Asignación sin ambigüedad:** un magic number solo puede tener un despliegue activo por
@@ -124,6 +130,12 @@ ts patterns --version <bot_version_id>          # buscar/validar trampas e impri
 ts patterns --version <bot_version_id> --symbol USTEC_x100 --report-only   # solo el informe
 ts backfill                                     # completar operaciones antiguas (tras importar historial)
 ts backfill --from 2026-01-01 --page-size 200   # por rango; reanudar con --after-time/--after-id
+ts experiment create --base <bot_version_id> --title "Filtro H1" --change "Agregar filtro de tendencia H1" \
+   --hypothesis <id de la trampa>             # o --filter-json '{"modo":"excluir","condicion":{...}}'
+ts experiment run-filter --id 1                 # filtro contrafactual (nueva revisión)
+ts experiment import-backtest --id 1 --file - --name deals.csv < deals.csv   # Strategy Tester
+ts experiment show --id 1                       # definición, revisiones y tabla lado a lado
+ts experiment list
 ```
 
 ## API
@@ -149,6 +161,12 @@ ts backfill --from 2026-01-01 --page-size 200   # por rango; reanudar con --afte
 | `GET /v1/patterns` | admin | Trampas y ventajas, validadas primero. Filtros: `bot_id`, `version_id`, `symbol`, `status` (`PROPOSED`, `TESTING`, `VALIDATED`, `REJECTED`, `DECAYED`), `kind` (`trap`/`edge`). `label` = "trampa validada" solo si pasó fuera de muestra; si no, "candidata, no validada", "rechazada" o "caducada". Métricas por tramo: `entrenamiento`, `validacion`, `fuera_de_muestra`, `forward` |
 | `GET /v1/patterns/{id}` | admin | Un patrón con todas sus pruebas, su split y la ejecución que lo propuso (candidatas probadas) |
 | `GET /v1/bots/{bot_id}/versions/{version_id}/report` | admin | Informe de la versión (sección 10): ganadoras frente a perdedoras, peores y mejores condiciones, mejor combinación, condiciones que aumentan el drawdown (MAE en R) y reglas de la fase 6, con muestra, win rate, expectativa, PF e IC dentro y fuera de muestra. `symbol` opcional |
+| `POST /v1/experiments`, `GET /v1/experiments`, `GET /v1/experiments/{n}` | admin | Laboratorio: alta (título, versión base, cambio, opcionales versión candidata, hipótesis, símbolo y `filter`), lista y detalle con revisiones y backtests. `{n}` = número (7) o id |
+| `POST /v1/experiments/{n}/results` | admin | Revisión MANUAL (nota, resultados externos, `status`, `conclusion`); nunca sobrescribe |
+| `POST /v1/experiments/{n}/filter-run` | admin | Filtro contrafactual con los datos de ahora, guardado como revisión |
+| `POST /v1/experiments/{n}/backtests` | admin | Multipart (`file`, opcionales `bot_version_id`, `label`, `symbol`): CSV de deals, informe HTML o XML del Strategy Tester. Máximo 8 MB (413 si se pasa); el mismo archivo dos veces da 409 |
+| `GET /v1/experiments/{n}/comparison` | admin | Brazos lado a lado (original, filtrado, candidata, backtests) por tramo, con curvas, avisos y trampas de cada versión |
+| `GET /v1/versions/compare?a=&b=` | admin | Dos versiones cualesquiera lado a lado (`symbol` opcional), con la diferencia de expectativa en R (Welch) |
 | `GET /v1/bots/{bot_id}/compare-versions` | admin | Métricas de cada versión del bot lado a lado, con avisos de muestra. Filtros: `symbol`, `account_id`, `source`, `from`/`to` |
 | `/dashboard` | navegador (sesión) | Dashboard web de solo lectura, ver [Dashboard](#dashboard) |
 
@@ -182,9 +200,11 @@ grep SUPERVISOR_ADMIN_TOKEN /opt/trading-supervisor/deploy/.env | cut -d= -f2
 | Operaciones | Abiertas y cerradas con filtros (bot o "sin asignar", versión, símbolo, estado, dirección, fechas de entrada) que se aplican sin recargar (HTMX), 50 por página, con neto, puntos, R y motivo de salida |
 | Detalle | Todos los campos, historia de eventos, gráfico de cierres M1 de entrada − 30 min a cierre + 30 min con entrada, SL/TP inicial y final y cierre, MFE/MAE, notas de calidad de datos, el análisis (fase 6) y el Trading DNA por secciones ("sin dato" con su motivo y cobertura de velas por timeframe) |
 | Bots | Bots → versiones → despliegues, con operaciones, win rate, neto y profit factor por versión (las estadísticas completas llegan con la Fase 6). Solo lectura: el registro sigue por API/CLI |
+| Laboratorio | Experimentos (#, título, bot base, estado, revisiones y titular: expectativa fuera de muestra original → filtrado) y formulario para comparar dos versiones. El detalle de cada experimento muestra su definición, la tabla lado a lado por tramo (fuera de muestra primero, dentro de muestra marcado como optimista), las curvas de neto acumulado de cada brazo, las trampas de cada versión y las revisiones. En Trampas, cada trampa validada tiene un botón **Crear experimento** (POST con token CSRF) que crea el experimento con el filtro "saltarse esas entradas" y calcula el contrafactual |
 | Sistema | Terminales y versión del EA, últimos 50 eventos FAILED con su error, operaciones sin despliegue agrupadas por cuenta + magic + símbolo (lo que falta registrar) |
 
-Funciona en el móvil (tablas con desplazamiento horizontal) y es de solo lectura. **Todas las
+Funciona en el móvil (tablas con desplazamiento horizontal) y es de solo lectura: el único
+POST que escribe es "Crear experimento", y solo en las tablas del laboratorio. **Todas las
 horas están en UTC** (elegir zona horaria queda fuera de esta fase).
 
 Seguridad:
@@ -436,6 +456,63 @@ Salvaguardas contra conclusiones con poca muestra (sección 11):
   relativa) o cuartiles de las operaciones del filtro. Sin DNA o NULL = "sin dato". Agrupar
   no es validar: la fase 9 contrasta los patrones fuera de muestra.
 
+## Laboratorio (fase 10)
+
+Un **experimento** documenta un cambio sobre una versión de un bot (sección 12):
+
+```
+EXPERIMENTO #001
+BOT BASE: EA_Nasdaq_FVG_Retest v1.0.0
+CAMBIO:   Agregar filtro de tendencia H1
+FILTRO:   Saltarse las entradas que cumplan: «Entrar contra la tendencia H1»
+```
+
+- **Inmutable:** versión base, candidata, hipótesis, símbolo, cambio y filtro no se pueden
+  modificar (trigger); solo cambian el estado (borrador, en curso, terminado, abandonado) y la
+  última conclusión. Cada resultado es una **revisión** nueva de solo inserción: FILTRO,
+  BACKTEST o MANUAL.
+- **Filtro estructurado** (opcional): las mismas condiciones de la fase 9 (`eq` sobre
+  categóricas y booleanas, `range` con `desde`/`hasta` sobre numéricas, hasta 3 cláusulas, o
+  una regla de la fase 6) y un modo: `excluir` (saltarse esas entradas; lo natural para una
+  trampa) o `solo`. Creado desde una trampa, el filtro es la propia trampa.
+
+**Filtro contrafactual (A):** con las operaciones **reales** cerradas de la versión base (las
+mismas que la fase 9: con riesgo conocido) se calcula el original, el filtrado y las evitadas:
+n, win rate (IC Wilson), profit factor y drawdown máximo (IC bootstrap al 95 %, 500
+remuestreos con semilla fija, menos si hay muchas operaciones), expectativa en dinero y en R
+(IC t), neto y la diferencia evitadas − mantenidas (Welch). Se separa con el **split congelado
+de la fase 9** (el de la trampa si sale de una): **dentro de muestra** = cerradas hasta el fin
+de validación (con ellas se eligió la condición: optimista) y **fuera de muestra** = cerradas
+después. **El titular es fuera de muestra.** Siempre con dos avisos: dentro de muestra es
+optimista, y el bot filtrado nunca operó, así que su comportamiento en vivo es desconocido
+(otras entradas, gestión, lotes): la confirmación es una versión nueva en demo o forward. Sin
+split (menos de 100 operaciones) no hay fuera de muestra y se avisa.
+
+**Backtests del Strategy Tester (B):** la vía recomendada es un **CSV con la tabla de
+transacciones (deals)** del informe: en el probador, pestaña *Backtest* → clic derecho →
+guardar el informe (HTML o XML), ábrelo con Excel o LibreOffice, deja solo la tabla de
+transacciones con su cabecera y *Guardar como* CSV. Columnas: Time, Deal, Symbol, Type,
+Direction, Volume, Price, Order, Commission, Swap, Profit, Balance, Comment (en inglés o
+castellano, en cualquier orden; separador `,` `;` o tabulador; UTF-8 o UTF-16). También se lee
+directamente, con el mejor esfuerzo, el informe **HTML** o **XML** de Excel 2003: se busca la
+tabla de deals por su cabecera y del resumen se toman experto, símbolo, modelo, depósito
+inicial y el neto del informe para contrastarlo. Un `.xlsx` se rechaza con un mensaje claro. Cada cierre (también un parcial) es una operación con su
+comisión de entrada proporcional. Se guarda en `backtest_runs` con origen **BACKTEST**: no crea
+operaciones y nunca entra en estadísticas, trampas ni dashboard de lo real. Sin SL en los
+deals, los backtests se comparan en dinero, no en R. Las horas son las del probador.
+
+**Comparación (sección 13):** `GET /v1/experiments/{n}/comparison` y la página del experimento
+ponen lado a lado cada brazo (original, filtrado, versión candidata con sus operaciones reales,
+cada backtest), por tramo, con avisos de muestra pequeña, las trampas validadas de cada versión
+y sus curvas de neto acumulado. `GET /v1/versions/compare` y *Laboratorio → Comparar dos
+versiones* hacen lo mismo con dos versiones cualesquiera. La comparación se calcula con los
+datos de ahora; las revisiones guardan la foto de cada momento.
+
+Subida por el VPS sin tocar la API desde fuera:
+`docker compose exec -T api supervisor-cli experiment import-backtest --id 1 --file - --name deals.csv < deals.csv`.
+Caddy deja pasar hasta 10 MB solo en `/v1/experiments/*/backtests` (la API corta en 8 MB,
+`SUPERVISOR_LAB_UPLOAD_MAX_BYTES`); el resto sigue en 2 MB.
+
 ## Desarrollo y pruebas
 
 ```bash
@@ -445,7 +522,7 @@ python3 -m pip install -e ".[dev]"
 export SUPERVISOR_TEST_DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5432/postgres
 export SUPERVISOR_DATABASE_URL=$SUPERVISOR_TEST_DATABASE_URL
 export SUPERVISOR_ADMIN_TOKEN=$(openssl rand -hex 32)
-python3 -m pytest          # pruebas: esquema, inmutabilidad, API, EA, worker, análisis, métricas, dashboard
+python3 -m pytest          # pruebas: esquema, inmutabilidad, API, EA, worker, análisis, métricas, dashboard, laboratorio
 python -m supervisor.worker.main   # el worker en local (Ctrl+C para pararlo)
 # El dashboard en local (http://127.0.0.1:8000/dashboard; sin HTTPS hay que desactivar Secure):
 SUPERVISOR_DASHBOARD_COOKIE_SECURE=false uvicorn supervisor.main:create_app --factory
