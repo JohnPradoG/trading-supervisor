@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="robots" content="noindex, nofollow">
+  {# Sin eval (hx-on, js:) ni estilos en línea: compatible con la CSP del dashboard. #}
+  <meta name="htmx-config" content='{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false, "historyCacheSize": 0}'>
+  <title>{% block title %}Trading Supervisor{% endblock %} · Trading Supervisor</title>
+  <link rel="stylesheet" href="/dashboard/static/app.css?v={{ version }}">
+  <script src="/dashboard/static/vendor/htmx-2.0.4.min.js" defer></script>
+  <script src="/dashboard/static/vendor/chart-4.4.7.umd.min.js" defer></script>
+  <script src="/dashboard/static/app.js?v={{ version }}" defer></script>
+</head>
+<body>
+{% if csrf_token %}
+<header class="topbar">
+  <a class="brand" href="/dashboard">Trading Supervisor</a>
+  <nav class="nav">
+    <a href="/dashboard" {% if nav == 'resumen' %}aria-current="page"{% endif %}>Resumen</a>
+    <a href="/dashboard/operaciones" {% if nav == 'operaciones' %}aria-current="page"{% endif %}>Operaciones</a>
+    <a href="/dashboard/bots" {% if nav == 'bots' %}aria-current="page"{% endif %}>Bots</a>
+    <a href="/dashboard/sistema" {% if nav == 'sistema' %}aria-current="page"{% endif %}>Sistema</a>
+  </nav>
+  <form method="post" action="/dashboard/logout" class="logout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn btn-ghost">Salir</button>
+  </form>
+</header>
+{% endif %}
+<main class="container">
+{% block content %}{% endblock %}
+</main>
+<footer class="footer">
+  Todas las horas en <strong>UTC</strong> · solo lectura · v{{ version }}
+  {% if session_expires %} · sesión hasta {{ session_expires | utc('%Y-%m-%d %H:%M') }} UTC{% endif %}
+</footer>
+</body>
+</html>

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% from "partials/macros.html" import direction, bot_label %}
+{% block title %}{{ t.symbol }} {{ t.entry_time | utc('%Y-%m-%d %H:%M') }}{% endblock %}
+{% block content %}
+{% set dg = t.symbol_digits %}
+<p><a href="/dashboard/operaciones">← Operaciones</a></p>
+<h1>{{ t.symbol }} {{ direction(t.direction) }}
+  {% if t.status.value == 'OPEN' %}<span class="badge info">abierta</span>{% else %}<span class="badge">cerrada</span>{% endif %}
+</h1>
+
+<section class="tiles">
+  <div class="tile"><div class="tile-label">Neto</div><div class="tile-value {{ t.net_profit | sign }}">{{ t.net_profit | num }}</div>
+    <div class="tile-sub">bruto {{ t.gross_profit | num }} · com. {{ t.commission | num }} · swap {{ t.swap | num }}</div></div>
+  <div class="tile"><div class="tile-label">Puntos · R</div><div class="tile-value {{ t.points | sign }}">{{ t.points | num(1) }}</div>
+    <div class="tile-sub">R {{ d.row.r_multiple | num }} · salida {{ t.exit_reason.value if t.exit_reason else '—' }}</div></div>
+  <div class="tile"><div class="tile-label">MFE / MAE (puntos)</div><div class="tile-value small-value"><span class="pos">{{ t.mfe_points | num(1) }}</span> / <span class="neg">{{ t.mae_points | num(1) }}</span></div>
+    <div class="tile-sub">dinero {{ t.max_floating_profit | num }} / {{ t.max_floating_drawdown | num }}{% if t.excursion_source %} · {{ t.excursion_source.value }}{% endif %}</div></div>
+  <div class="tile"><div class="tile-label">Duración</div><div class="tile-value small-value">{{ t.duration_seconds | duration }}</div>
+    <div class="tile-sub">{{ t.entry_time | utc('%m-%d %H:%M') }} → {{ t.close_time | utc('%m-%d %H:%M') }} UTC</div></div>
+</section>
+
+<section class="card">
+  <h2>Precio M1 <span class="muted small">(cierres, de entrada − {{ bars_margin }} min a cierre + {{ bars_margin }} min, UTC)</span></h2>
+  <div class="chart-box">
+    <canvas id="trade-chart" data-chart="trade" data-url="/dashboard/api/operaciones/{{ t.trade_id }}/velas"
+            aria-label="Precio de cierre M1 alrededor de la operación con entrada, SL, TP y cierre" role="img"></canvas>
+  </div>
+  <p class="muted small" data-chart-empty hidden>No hay velas M1 guardadas para este tramo.</p>
+</section>
+
+{% include "partials/analisis.html" %}
+
+<div class="grid-2">
+<section class="card">
+  <h2>Datos</h2>
+  <dl class="kv">
+    <dt>Bot</dt><dd>{{ bot_label(d.row) }}</dd>
+    <dt>Cuenta</dt><dd>{{ d.account.login }} · {{ d.account.server }} · {{ d.broker_name }}</dd>
+    <dt>Despliegue</dt><dd>{% if d.deployment %}magic {{ d.deployment.magic_number }} desde {{ d.deployment.started_at | utc('%Y-%m-%d') }}{% else %}<span class="badge warn">sin asignar</span> magic {{ t.magic_number }}{% endif %}</dd>
+    <dt>Posición MT5</dt><dd>{{ t.position_id }} · {{ t.order_type }} · {{ t.source.value }}</dd>
+    <dt>Comentario</dt><dd>{{ t.comment or '—' }}</dd>
+    <dt>Entrada</dt><dd>{{ t.entry_price | price(dg) }} · {{ t.entry_time | utc }} UTC</dd>
+    <dt>SL / TP inicial</dt><dd>{{ t.initial_sl | price(dg) }} / {{ t.initial_tp | price(dg) }}</dd>
+    <dt>SL / TP actual</dt><dd>{{ t.current_sl | price(dg) }} / {{ t.current_tp | price(dg) }}</dd>
+    <dt>Volumen</dt><dd>inicial {{ t.initial_volume | num }} · máx. {{ t.max_volume | num }} · abierto {{ t.current_volume | num }}</dd>
+    <dt>Riesgo</dt><dd>{{ t.risk_amount | num }} ({{ t.risk_percent | dec }} % de {{ t.balance_at_entry | num }})</dd>
+    <dt>Cierre</dt><dd>{{ t.close_price | price(dg) }} · {{ t.close_time | utc }} UTC</dd>
+    <dt>Reentrada de</dt><dd>{% if d.reentry_of %}<a href="/dashboard/operaciones/{{ d.reentry_of.trade_id }}">{{ d.reentry_of.entry_time | utc('%Y-%m-%d %H:%M') }}</a>{% else %}—{% endif %}</dd>
+    <dt>Símbolo</dt><dd>dígitos {{ t.symbol_digits if t.symbol_digits is not none else '—' }} · tick {{ t.tick_size | dec }} = {{ t.tick_value | dec }}</dd>
+    <dt>trade_id</dt><dd class="mono">{{ t.trade_id }}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Calidad de datos</h2>
+  {% if t.data_quality %}
+  <pre class="json">{{ t.data_quality | tojson(indent=2) }}</pre>
+  {% else %}
+  <p class="muted">Sin notas: todos los datos llegaron completos.</p>
+  {% endif %}
+</section>
+</div>
+
+<section class="card">
+  <h2>Historia <span class="muted small">({{ d.events | length }} eventos)</span></h2>
+  <ol class="timeline">
+  {% for e in d.events %}
+    <li class="tl-item">
+      <div class="tl-head">
+        <span class="badge ev-{{ e.event_type.value | lower }}">{{ e.event_type.value }}</span>
+        <span class="nowrap">{{ e.event_time_utc | utc }} UTC</span>
+        {% if e.is_inferred %}<span class="badge warn">inferido</span>{% endif %}
+      </div>
+      <div class="tl-body muted">
+        {% if e.price is not none %}precio {{ e.price | price(dg) }} · {% endif %}
+        {% if e.volume is not none %}vol. {{ e.volume | num }} · {% endif %}
+        {% if e.sl is not none %}SL {{ e.sl | price(dg) }} · {% endif %}
+        {% if e.tp is not none %}TP {{ e.tp | price(dg) }} · {% endif %}
+        {% if e.profit is not none %}beneficio {{ e.profit | num }} · {% endif %}
+        {% if e.deal_ticket %}deal {{ e.deal_ticket }}{% endif %}
+        {% if e.extra %}<details><summary>más</summary><pre class="json">{{ e.extra | tojson(indent=2) }}</pre></details>{% endif %}
+      </div>
+    </li>
+  {% else %}
+    <li class="muted">Sin eventos.</li>
+  {% endfor %}
+  </ol>
+</section>
+{% endblock %}

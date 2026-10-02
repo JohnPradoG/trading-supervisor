@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Operaciones{% endblock %}
+{% block content %}
+<h1>Operaciones</h1>
+<form class="filters card" method="get" action="/dashboard/operaciones"
+      hx-get="/dashboard/operaciones" hx-target="#tabla-operaciones" hx-swap="innerHTML"
+      hx-trigger="change, submit" hx-push-url="true">
+  <label>Bot
+    <select name="bot">
+      <option value="">Todos</option>
+      <option value="{{ unassigned_value }}" {% if selected.bot == unassigned_value %}selected{% endif %}>Sin asignar</option>
+      {% for id, name in options.bots %}<option value="{{ id }}" {% if selected.bot == id|string %}selected{% endif %}>{{ name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Versión
+    <select name="version">
+      <option value="">Todas</option>
+      {% for id, name in options.versions %}<option value="{{ id }}" {% if selected.version == id|string %}selected{% endif %}>{{ name }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Símbolo
+    <select name="symbol">
+      <option value="">Todos</option>
+      {% for s in options.symbols %}<option value="{{ s }}" {% if selected.symbol == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Estado
+    <select name="status">
+      <option value="">Todos</option>
+      <option value="OPEN" {% if selected.status == 'OPEN' %}selected{% endif %}>Abiertas</option>
+      <option value="CLOSED" {% if selected.status == 'CLOSED' %}selected{% endif %}>Cerradas</option>
+    </select>
+  </label>
+  <label>Dirección
+    <select name="direction">
+      <option value="">Todas</option>
+      <option value="BUY" {% if selected.direction == 'BUY' %}selected{% endif %}>Compra</option>
+      <option value="SELL" {% if selected.direction == 'SELL' %}selected{% endif %}>Venta</option>
+    </select>
+  </label>
+  <label>Entrada desde (UTC)
+    <input type="date" name="desde" value="{{ selected.desde }}">
+  </label>
+  <label>hasta (UTC, incluido)
+    <input type="date" name="hasta" value="{{ selected.hasta }}">
+  </label>
+  <div class="filter-actions">
+    <button type="submit" class="btn">Filtrar</button>
+    <a class="btn btn-ghost" href="/dashboard/operaciones">Limpiar</a>
+  </div>
+</form>
+<section class="card" id="tabla-operaciones">
+  {% include "partials/tabla_operaciones.html" %}
+</section>
+{% endblock %}

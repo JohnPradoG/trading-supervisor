@@ -9,6 +9,7 @@ RUN useradd --create-home --uid 10001 supervisor
 WORKDIR /app
 
 COPY backend/pyproject.toml ./
+# Incluye las plantillas y estáticos del dashboard (package-data en pyproject.toml).
 COPY backend/supervisor ./supervisor
 RUN pip install .
 

@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     # Reentrada: apertura en la misma cuenta, símbolo y magic tras un cierre por SL.
     reentry_window_minutes: int = Field(default=30, ge=0)
 
+    # Dashboard web (/dashboard). La sesión es una cookie firmada con HMAC-SHA256 con una clave
+    # derivada de admin_token: rotar el token invalida todas las sesiones.
+    dashboard_session_hours: float = Field(default=12, gt=0, le=24 * 30)
+    # Cookie solo por HTTPS. Desactivar únicamente en pruebas o desarrollo local sin TLS.
+    dashboard_cookie_secure: bool = True
+    # Límite de intentos de login fallidos por IP y ventana (en memoria, por proceso).
+    dashboard_login_max_failures: int = Field(default=5, ge=1)
+    dashboard_login_window_seconds: int = Field(default=900, ge=1)
+
 
 @lru_cache
 def get_settings() -> Settings:

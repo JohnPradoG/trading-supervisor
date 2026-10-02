@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% from "partials/macros.html" import terminals_table, direction, bot_label %}
+{% block title %}Resumen{% endblock %}
+{% block content %}
+<h1>Resumen <span class="muted small">{{ now | utc('%Y-%m-%d %H:%M') }} UTC</span></h1>
+
+<section class="tiles">
+  {% for label, s in [('Hoy (UTC)', summary_today), ('Últimos 7 días', summary_7d)] %}
+  <div class="tile">
+    <div class="tile-label">Cerradas · {{ label }}</div>
+    <div class="tile-value {{ s.net | sign }}">{{ s.net | num }}</div>
+    <div class="tile-sub">{{ s.count }} operaciones · win rate {{ s.win_rate | pct }}</div>
+  </div>
+  {% endfor %}
+  <div class="tile">
+    <div class="tile-label">Cola del worker</div>
+    <div class="tile-value {{ 'neg' if backlog.failed else '' }}">{{ backlog.pending }} / {{ backlog.failed }}</div>
+    <div class="tile-sub">pendientes / fallidos</div>
+  </div>
+  <div class="tile">
+    <div class="tile-label">Último evento procesado</div>
+    <div class="tile-value small-value">{{ backlog.last_processed_at | utc('%m-%d %H:%M:%S') }}</div>
+    <div class="tile-sub">{% if backlog.last_processed_id %}#{{ backlog.last_processed_id }} {{ backlog.last_processed_type }} · {{ backlog.last_processed_status }}{% else %}ninguno{% endif %}</div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Cuentas</h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Cuenta</th><th>Broker</th><th class="num">Balance</th><th class="num">Equity</th><th class="num">Flotante</th><th class="num">Posiciones</th><th>Foto (UTC)</th></tr></thead>
+    <tbody>
+    {% for b in balances %}
+      <tr>
+        <td class="nowrap">{{ b.login }} <span class="muted">{{ b.server }}</span></td>
+        <td>{{ b.broker }}</td>
+        <td class="num">{{ b.balance | num }} <span class="muted">{{ b.currency }}</span></td>
+        <td class="num">{{ b.equity | num }}</td>
+        {% set floating = (b.equity - b.balance) if b.balance is not none else none %}
+        <td class="num {{ floating | sign }}">{{ floating | num }}</td>
+        <td class="num">{{ b.open_positions if b.open_positions is not none else '—' }}</td>
+        <td class="nowrap">{{ b.ts | utc }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">Sin cuentas activas.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Balance y equity</h2>
+    {% if chart_accounts %}
+    <div class="chart-controls" id="equity-controls">
+      {% if chart_accounts | length > 1 %}
+      <label class="sr-only" for="equity-account">Cuenta</label>
+      <select id="equity-account" data-equity-account>
+        {% for b in chart_accounts %}<option value="{{ b.account_id }}">{{ b.login }} · {{ b.broker }}</option>{% endfor %}
+      </select>
+      {% endif %}
+      <div class="segmented" role="group" aria-label="Periodo">
+        {% for r in ranges %}<button type="button" class="seg" data-equity-range="{{ r }}" aria-pressed="{{ 'true' if loop.first else 'false' }}">{{ r }}</button>{% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  {% if chart_accounts %}
+  <div class="chart-box">
+    <canvas id="equity-chart" data-chart="equity" data-url="/dashboard/api/equity"
+            data-account="{{ chart_accounts[0].account_id }}" data-range="24h"
+            aria-label="Balance y equity de la cuenta en UTC" role="img"></canvas>
+  </div>
+  <p class="muted small">Máximo 500 puntos: cada punto es la última foto de su intervalo. Eje horario en UTC.</p>
+  {% else %}
+  <p class="muted">Todavía no hay fotos de cuenta (el EA las envía periódicamente).</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2>Operaciones abiertas <span class="muted small">({{ open_trades | length }})</span></h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Símbolo</th><th>Dirección</th><th class="num">Volumen</th><th class="num">Entrada</th><th class="num">SL</th><th class="num">TP</th><th>Bot</th><th>Abierta (UTC)</th><th>Tiempo</th></tr></thead>
+    <tbody>
+    {% for r in open_trades %}{% set t = r.trade %}
+      <tr>
+        <td><a href="/dashboard/operaciones/{{ t.trade_id }}">{{ t.symbol }}</a></td>
+        <td>{{ direction(t.direction) }}</td>
+        <td class="num">{{ t.current_volume | num }}</td>
+        <td class="num">{{ t.entry_price | price(t.symbol_digits) }}</td>
+        <td class="num">{{ t.current_sl | price(t.symbol_digits) }}</td>
+        <td class="num">{{ t.current_tp | price(t.symbol_digits) }}</td>
+        <td>{{ bot_label(r) }}</td>
+        <td class="nowrap">{{ t.entry_time | utc('%m-%d %H:%M') }}</td>
+        <td class="nowrap">{{ ((now - t.entry_time).total_seconds() | int) | duration }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="9" class="muted">No hay operaciones abiertas.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Terminales</h2>
+  {{ terminals_table(terminals) }}
+  <p class="muted small">Online = último latido hace menos de 2 minutos.</p>
+</section>
+{% endblock %}

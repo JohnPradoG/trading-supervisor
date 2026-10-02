@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Bots{% endblock %}
+{% block content %}
+<h1>Bots</h1>
+<p class="muted">Solo lectura: los bots, versiones y despliegues se registran por la API de administración o la CLI.
+Estadísticas simples de operaciones cerradas; las completas (expectancy, drawdown, intervalos) llegan con la Fase 6.</p>
+{% for b in bots %}
+<section class="card">
+  <div class="card-head">
+    <h2>{{ b.bot.name }}</h2>
+    <span class="badge {{ 'ok' if b.bot.status.value == 'ACTIVE' else 'muted-badge' }}">{{ b.bot.status.value }}</span>
+  </div>
+  <p class="muted small">{{ b.bot.strategy }}{% if b.bot.notes %} · {{ b.bot.notes }}{% endif %}</p>
+  {% for vo in b.versions %}{% set v = vo.version %}{% set s = vo.stats %}
+  <div class="version">
+    <div class="version-head">
+      <h3><a href="/dashboard/operaciones?version={{ v.id }}">v{{ v.version }}</a> <span class="muted small">{{ v.main_timeframe }} · publicada {{ v.released_at | utc('%Y-%m-%d') }}</span></h3>
+      <div class="stats">
+        <span>{{ s.closed }} cerradas{% if s.open %} · {{ s.open }} abiertas{% endif %}</span>
+        <span>win rate {{ s.win_rate | pct }}</span>
+        <span class="{{ s.net | sign }}">neto {{ s.net | num }}</span>
+        <span>PF {{ s.profit_factor | num if s.profit_factor is not none else '—' }}</span>
+      </div>
+    </div>
+    {% if v.changelog %}<p class="muted small">{{ v.changelog }}</p>{% endif %}
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Cuenta</th><th>Símbolo</th><th>Magic</th><th>Desde (UTC)</th><th>Hasta (UTC)</th><th>Estado</th></tr></thead>
+      <tbody>
+      {% for dep, login, server in vo.deployments %}
+        <tr>
+          <td class="nowrap">{{ login }} <span class="muted">{{ server }}</span></td>
+          <td>{{ dep.symbol }}</td>
+          <td class="mono">{{ dep.magic_number }}</td>
+          <td class="nowrap">{{ dep.started_at | utc('%Y-%m-%d %H:%M') }}</td>
+          <td class="nowrap">{{ dep.ended_at | utc('%Y-%m-%d %H:%M') }}</td>
+          <td>{% if dep.ended_at %}<span class="badge muted-badge">finalizado</span>{% else %}<span class="badge ok">activo</span>{% endif %}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="muted">Sin despliegues.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </div>
+  {% else %}
+  <p class="muted">Sin versiones registradas.</p>
+  {% endfor %}
+</section>
+{% else %}
+<section class="card"><p class="muted">No hay bots registrados (POST /v1/bots).</p></section>
+{% endfor %}
+{% endblock %}

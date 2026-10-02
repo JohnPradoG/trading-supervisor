@@ -1,0 +1,33 @@
+{#
+  Hueco de la Fase 6 (análisis post-operación). `analysis` lo da
+  supervisor.services.dashboard.trade_analysis(): None mientras no exista el servicio.
+  Forma esperada: outcome, analyzer_version, created_at, facts[], hypotheses[] (cada uno con
+  text y confidence opcional) y data_quality[] (code, text).
+#}
+<section class="card" id="analisis">
+  <h2>Análisis</h2>
+  {% if analysis %}
+    <p>Resultado: <strong>{{ analysis.outcome }}</strong>
+      {% if analysis.analyzer_version %}<span class="muted small">· analizador {{ analysis.analyzer_version }}{% if analysis.created_at %} · {{ analysis.created_at | utc('%Y-%m-%d %H:%M') }} UTC{% endif %}</span>{% endif %}</p>
+    <div class="grid-2">
+      <div>
+        <h3>Hechos</h3>
+        <ul class="findings">
+        {% for f in analysis.facts %}<li><span class="badge">HECHO</span> {{ f.text }}</li>{% else %}<li class="muted">Sin hechos registrados.</li>{% endfor %}
+        </ul>
+      </div>
+      <div>
+        <h3>Hipótesis <span class="muted small">(no son conclusiones: se validan estadísticamente aparte)</span></h3>
+        <ul class="findings">
+        {% for f in analysis.hypotheses %}<li><span class="badge warn">HIPÓTESIS</span> {{ f.text }}{% if f.confidence %} <span class="muted small">· confianza {{ f.confidence }}</span>{% endif %}</li>{% else %}<li class="muted">Sin hipótesis.</li>{% endfor %}
+        </ul>
+      </div>
+    </div>
+    {% if analysis.data_quality %}
+    <h3>Limitaciones de los datos</h3>
+    <ul class="findings">{% for n in analysis.data_quality %}<li><span class="mono small">{{ n.code }}</span> {{ n.text }}</li>{% endfor %}</ul>
+    {% endif %}
+  {% else %}
+    <p class="muted">Análisis pendiente: lo generará la Fase 6 (hechos e hipótesis por operación).</p>
+  {% endif %}
+</section>

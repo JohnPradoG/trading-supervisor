@@ -13,8 +13,9 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | 2 · Base de datos | Hecha: 25 tablas, migraciones Alembic, reglas de inmutabilidad, backups |
 | 3 · API | Hecha: ingesta idempotente, API keys por terminal, registro de bots, HTTPS con Caddy |
 | 4 · Bridge MT5 (EA Monitor) | Hecha: EA de solo lectura con cola en disco, ver [mt5/README.md](mt5/README.md) |
-| 5 · Registro de operaciones | **Hecha**: worker que convierte deals, SL/TP y fotos de posiciones en operaciones con riesgo, motivo de salida, MFE/MAE y reentradas |
-| 6 · Análisis por operación | Siguiente |
+| 5 · Registro de operaciones | Hecha: worker que convierte deals, SL/TP y fotos de posiciones en operaciones con riesgo, motivo de salida, MFE/MAE y reentradas |
+| 6 · Análisis por operación | En curso (rama `fase-6-analisis`) |
+| 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`. Pendiente: Trading DNA, patrones, experimentos y alertas (llegan con sus fases) |
 
 ## Estructura
 
@@ -22,8 +23,9 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 backend/             paquete Python `supervisor` + migraciones + pruebas
   supervisor/models/ modelos SQLAlchemy (identidad, bots, trading, análisis, investigación)
   supervisor/api/    rutas FastAPI (ingesta del EA, registro y consulta de operaciones)
-  supervisor/services/ lógica de ingesta, registro y consulta
+  supervisor/services/ lógica de ingesta, registro y consulta (dashboard.py: consultas del dashboard)
   supervisor/worker/ worker de operaciones: raw_events -> trades + trade_events
+  supervisor/dashboard/ dashboard web: rutas, sesión/CSRF, plantillas Jinja2, htmx y Chart.js
   supervisor/cli.py  alta de cuentas, terminales y API keys; reprocess; trade-summary
   migrations/        0001 esquema inicial · 0002 reglas de inmutabilidad (triggers)
                      0003 columnas del worker (event_time, reintentos, estado vivo)
@@ -107,6 +109,7 @@ ts reprocess [--terminal exness-win-01]         # reintentar los eventos FAILED
 | `GET /v1/raw-events` | admin | Últimos eventos recibidos |
 | `GET /v1/trades` | admin | Operaciones, más recientes primero. Filtros: `bot_id`, `version_id`, `symbol`, `status` (`OPEN`/`CLOSED`), `from`/`to` (hora de entrada, UTC), `limit` (≤ 500), `offset` |
 | `GET /v1/trades/{trade_id}` | admin | Una operación con toda su historia (`events`) |
+| `/dashboard` | navegador (sesión) | Dashboard web de solo lectura, ver [Dashboard](#dashboard) |
 
 No existe ninguna ruta que envíe órdenes a MT5. La clave de idempotencia la calcula el
 servidor (`deal:<login>:<ticket>`, `mod:<login>:<posición>:<hora_ms>:<sl>:<tp>`), así que un
@@ -121,6 +124,48 @@ curl -s -X POST https://TU_DOMINIO/v1/bots -H "Authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
   -d '{"name":"EA_Nasdaq_FVG_Retest","strategy":"Retesteo de FVG a favor de tendencia"}'
 ```
+
+## Dashboard
+
+Entra en **https://johntrading.duckdns.org/dashboard** (o `https://TU_DOMINIO/dashboard`) y
+pega el valor de `SUPERVISOR_ADMIN_TOKEN` de `deploy/.env`:
+
+```bash
+grep SUPERVISOR_ADMIN_TOKEN /opt/trading-supervisor/deploy/.env | cut -d= -f2
+```
+
+| Página | Qué muestra |
+| --- | --- |
+| Resumen | Latido de cada terminal (online si < 2 min), cola del worker (PENDING/FAILED) y último evento procesado, balance y equity por cuenta, gráfico de balance/equity (24h/7d/30d, máximo 500 puntos), operaciones abiertas, cerradas hoy y en 7 días (número, neto, win rate) |
+| Operaciones | Abiertas y cerradas con filtros (bot o "sin asignar", versión, símbolo, estado, dirección, fechas de entrada) que se aplican sin recargar (HTMX), 50 por página, con neto, puntos, R y motivo de salida |
+| Detalle | Todos los campos, historia de eventos, gráfico de cierres M1 de entrada − 30 min a cierre + 30 min con entrada, SL/TP inicial y final y cierre, MFE/MAE y notas de calidad de datos. Hueco "Análisis" para la Fase 6 |
+| Bots | Bots → versiones → despliegues, con operaciones, win rate, neto y profit factor por versión (las estadísticas completas llegan con la Fase 6). Solo lectura: el registro sigue por API/CLI |
+| Sistema | Terminales y versión del EA, últimos 50 eventos FAILED con su error, operaciones sin despliegue agrupadas por cuenta + magic + símbolo (lo que falta registrar) |
+
+Funciona en el móvil (tablas con desplazamiento horizontal) y es de solo lectura. **Todas las
+horas están en UTC** (elegir zona horaria queda fuera de esta fase).
+
+Seguridad:
+
+- **Sesión:** cookie `ts_session` firmada con HMAC-SHA256 (clave derivada del token de
+  administración), caduca a las 12 h (`SUPERVISOR_DASHBOARD_SESSION_HOURS`), `HttpOnly`,
+  `Secure`, `SameSite=Strict`, `Path=/dashboard`. Sin sesión, toda página redirige al login y
+  los JSON del dashboard responden 401. "Salir" borra la cookie; para invalidar **todas** las
+  sesiones (p. ej. si pierdes el móvil) rota `SUPERVISOR_ADMIN_TOKEN` y reinicia la API
+  (`docker compose up -d api worker`). El EA no se ve afectado: usa su propia API key.
+- **CSRF:** los POST (login y logout) llevan un token sincronizado (el de la sesión firmada o,
+  antes del login, una cookie de doble envío), además de SameSite=Strict y comprobación de
+  `Sec-Fetch-Site`/`Origin`. Comparaciones en tiempo constante.
+- **Fuerza bruta:** 5 fallos por IP en 15 min bloquean el login (configurable con
+  `SUPERVISOR_DASHBOARD_LOGIN_MAX_FAILURES` y `..._WINDOW_SECONDS`). El contador está en
+  memoria y es **por proceso**: con 2 workers de uvicorn el límite real es el doble y se
+  reinicia al reiniciar la API.
+- **CSP:** la aplicación envía `script-src 'self'; style-src 'self'` sin `unsafe-inline` ni
+  `unsafe-eval`: no hay scripts ni estilos en línea, htmx y Chart.js se sirven desde
+  `/dashboard/static/vendor` (htmx 2.0.4 y Chart.js 4.4.7, sin CDN) y los gráficos leen sus
+  datos de `/dashboard/api/...`. Caddy envía `Referrer-Policy: same-origin` (con
+  `no-referrer` los navegadores mandan `Origin: null` en los formularios propios).
+- Las rutas `/v1` no cambian y siguen usando `Authorization: Bearer`.
 
 ## Worker de operaciones
 
@@ -182,8 +227,10 @@ python3 -m pip install -e ".[dev]"
 export SUPERVISOR_TEST_DATABASE_URL=postgresql+psycopg://postgres@127.0.0.1:5432/postgres
 export SUPERVISOR_DATABASE_URL=$SUPERVISOR_TEST_DATABASE_URL
 export SUPERVISOR_ADMIN_TOKEN=$(openssl rand -hex 32)
-python3 -m pytest          # 71 pruebas: esquema, inmutabilidad, API, contrato con el EA, worker
+python3 -m pytest          # 85 pruebas: esquema, inmutabilidad, API, contrato con el EA, worker, dashboard
 python -m supervisor.worker.main   # el worker en local (Ctrl+C para pararlo)
+# El dashboard en local (http://127.0.0.1:8000/dashboard; sin HTTPS hay que desactivar Secure):
+SUPERVISOR_DASHBOARD_COOKIE_SECURE=false uvicorn supervisor.main:create_app --factory
 python3 -m ruff check . && python3 -m ruff format --check .
 ```
 
