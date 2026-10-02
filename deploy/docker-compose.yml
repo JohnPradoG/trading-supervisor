@@ -1,11 +1,25 @@
-# Trading Supervisor · Fase 2
+# Trading Supervisor · Fase 3
 # Uso (desde la carpeta deploy/):
-#   cp .env.example .env   # y completar las claves
+#   cp .env.example .env   # y completar las claves y el dominio
 #   docker compose up -d --build
-# Servicios: postgres (base de datos) y migrate (aplica el esquema y termina).
-# La API, el worker y Caddy se añaden en la fase 3.
+# Servicios:
+#   postgres  base de datos (solo accesible desde el propio VPS)
+#   migrate   aplica las migraciones y termina; la API espera a que acabe bien
+#   api       FastAPI (solo accesible a través de Caddy)
+#   caddy     HTTPS automático con Let's Encrypt en los puertos 80/443
+# El worker se añade en la fase 5.
 
 name: trading-supervisor
+
+x-app-env: &app-env
+  SUPERVISOR_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-supervisor}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supervisor}
+  SUPERVISOR_ADMIN_TOKEN: ${SUPERVISOR_ADMIN_TOKEN:?Define SUPERVISOR_ADMIN_TOKEN en deploy/.env}
+  SUPERVISOR_LOG_LEVEL: ${SUPERVISOR_LOG_LEVEL:-INFO}
+  SUPERVISOR_DB_POOL_SIZE: "3"
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "5" }
 
 services:
   postgres:
@@ -46,20 +60,58 @@ services:
       resources:
         limits:
           memory: 1g
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "5" }
+    logging: *logging
 
   migrate:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    environment:
-      SUPERVISOR_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-supervisor}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supervisor}
+    image: trading-supervisor:latest
+    command: ["alembic", "upgrade", "head"]
+    environment: *app-env
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
+    logging: *logging
+
+  api:
+    image: trading-supervisor:latest
+    restart: unless-stopped
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # Sin puertos publicados: solo Caddy llega a la API por la red interna de Docker.
+    expose:
+      - "8000"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SUPERVISOR_DOMAIN: ${SUPERVISOR_DOMAIN:?Define SUPERVISOR_DOMAIN en deploy/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    logging: *logging
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

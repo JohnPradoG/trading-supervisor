@@ -16,5 +16,9 @@ COPY backend/alembic.ini ./
 COPY backend/migrations ./migrations
 
 USER supervisor
-# La fase 3 añade aquí el arranque de la API; por ahora la imagen aplica migraciones.
-CMD ["alembic", "upgrade", "head"]
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+# 2 workers: suficiente para 1 vCPU; la ingesta es ligera (validar + INSERT).
+CMD ["uvicorn", "supervisor.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", \
+     "--workers", "2", "--proxy-headers", "--forwarded-allow-ips", "*", "--no-access-log"]
