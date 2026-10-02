@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from supervisor.config import Settings
 from supervisor.models import AccountSnapshot, Heartbeat, PriceBar, RawEvent, Terminal
+from supervisor.models.enums import RawEventOrigin
 from supervisor.schemas.ingest import (
     SCHEMA_VERSION,
     AccountSnapshotIn,
@@ -66,6 +67,9 @@ def ingest_events(
         raise ServiceError(f"lote demasiado grande: máximo {settings.ingest_max_batch} eventos")
 
     now = datetime.now(UTC)
+    origin = (
+        RawEventOrigin.HISTORY_IMPORT if batch.origin == "history_import" else RawEventOrigin.EA
+    )
     results: list[EventResult] = []
     for index, raw in enumerate(batch.events):
         try:
@@ -97,6 +101,7 @@ def ingest_events(
                 payload=event.model_dump(mode="json"),
                 sent_at=batch.sent_at,
                 event_time=event.time_utc,
+                origin=origin,
             )
             .on_conflict_do_nothing(index_elements=["terminal_id", "idempotency_key"])
             .returning(RawEvent.id)
@@ -116,6 +121,7 @@ def ingest_events(
         "lote de eventos",
         extra={
             "terminal": ctx.terminal_name,
+            "origin": origin.value,
             "accepted": counts[EventStatus.ACCEPTED],
             "duplicate": counts[EventStatus.DUPLICATE],
             "rejected": counts[EventStatus.REJECTED],
@@ -203,8 +209,13 @@ def ingest_bars(
         for bar in payload.bars
     ]
     # Las velas cerradas no cambian: si ya existe, se conserva la primera versión recibida.
-    stmt = insert(PriceBar).values(rows).on_conflict_do_nothing().returning(PriceBar.bar_time)
-    inserted = len(session.execute(stmt).all())
+    # Sentencia fija con lista de parámetros (executemany): SQLAlchemy la agrupa en INSERT de
+    # varias filas ("insertmanyvalues") y la compila una sola vez. Con .values(rows) se
+    # compilaba una sentencia de 50 000 parámetros en cada envío de 5000 velas.
+    stmt = (
+        insert(PriceBar.__table__).on_conflict_do_nothing().returning(PriceBar.__table__.c.bar_time)
+    )
+    inserted = len(session.connection().execute(stmt, rows).all())
     return SimpleIngestResult(received=len(rows), inserted=inserted)
 
 

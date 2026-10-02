@@ -42,7 +42,7 @@ def run_forever(
     while not stop.is_set():
         try:
             stats = process_batch(session_factory, settings)
-            processed = {k: v for k, v in stats.items() if k != "selected" and v}
+            processed = {k: v for k, v in stats.items() if k not in ("selected", "more") and v}
             if processed:
                 log.info("lote procesado", extra=processed)
             if time.monotonic() - last_maintenance >= settings.worker_maintenance_interval_seconds:
@@ -63,7 +63,7 @@ def run_forever(
             stop.wait(settings.worker_poll_interval_seconds)
             continue
         _touch(settings.worker_health_file)
-        if stats["selected"] < settings.worker_batch_size:
+        if not stats["more"]:
             stop.wait(settings.worker_poll_interval_seconds)
 
 

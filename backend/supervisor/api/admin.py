@@ -5,9 +5,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 
-from supervisor.api.deps import SessionDep, admin_auth
+from supervisor.api.deps import SessionDep, SettingsDep, admin_auth
 from supervisor.models.enums import RawEventStatus
 from supervisor.schemas.registry import (
+    BackfillCursor,
+    BackfillOut,
+    BackfillRequest,
     BotCreate,
     BotDetail,
     BotOut,
@@ -20,6 +23,7 @@ from supervisor.schemas.registry import (
     VersionOut,
 )
 from supervisor.services import registry
+from supervisor.worker.backfill import backfill_page
 
 router = APIRouter(prefix="/v1", tags=["registro"], dependencies=[Depends(admin_auth)])
 
@@ -85,3 +89,18 @@ def list_raw_events(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ):
     return registry.list_raw_events(session, status_filter, limit)
+
+
+@router.post("/admin/backfill", response_model=BackfillOut)
+def backfill(data: BackfillRequest, session: SessionDep, settings: SettingsDep):
+    """Una página acotada del backfill (despliegue, MFE/MAE, riesgo, DNA y análisis de
+    operaciones antiguas). Trabajo limitado por petición para no bloquear la API: para
+    recorrerlo todo, repetir con `next` hasta que sea null, o usar `supervisor-cli backfill`."""
+    after = (data.after_time, data.after_id) if data.after_time is not None else None
+    page = backfill_page(session, settings, after, data.limit, data.entry_from, data.entry_to)
+    session.commit()
+    cursor = page.next_cursor
+    return BackfillOut(
+        stats=dict(page.stats),
+        next=BackfillCursor(after_time=cursor[0], after_id=cursor[1]) if cursor else None,
+    )

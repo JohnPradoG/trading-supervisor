@@ -43,6 +43,7 @@ from supervisor.models.enums import (
     Direction,
     ExcursionSource,
     ExitReason,
+    RawEventOrigin,
     RawEventStatus,
     TradeEventType,
     TradeSource,
@@ -63,6 +64,14 @@ class RawEvent(Base):
             "id",
             postgresql_where=text("status = 'PENDING'"),
         ),
+        # Pendientes del EA en vivo: el worker los atiende antes que una importación de
+        # historial (ver supervisor.worker.processor).
+        Index(
+            "ix_raw_events_pending_live",
+            "event_time",
+            "id",
+            postgresql_where=text("status = 'PENDING' AND origin = 'EA'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -74,6 +83,10 @@ class RawEvent(Base):
     sent_at: Mapped[UTCDateTime]
     # Hora del hecho en MT5 (time_utc del evento): el worker procesa en este orden.
     event_time: Mapped[UTCDateTime | None]
+    # EA (en vivo) o HISTORY_IMPORT (script de importación de historial).
+    origin: Mapped[RawEventOrigin] = mapped_column(
+        str_enum(RawEventOrigin), server_default=RawEventOrigin.EA.value
+    )
     received_at: Mapped[CreatedAt]
     status: Mapped[RawEventStatus] = mapped_column(
         str_enum(RawEventStatus), server_default=RawEventStatus.PENDING.value

@@ -15,7 +15,10 @@ Decisiones:
   puede ser otra fila de trades (unicidad); se deja constancia en
   data_quality["inversion_inout"] y los deals posteriores de esa posición quedan IGNORED.
 - order_type: el EA no informa el tipo de orden, se guarda "UNKNOWN".
-- source: cuenta REAL -> LIVE; DEMO y CONTEST -> DEMO.
+- source: cuenta REAL -> LIVE; DEMO y CONTEST -> DEMO. También para las operaciones
+  importadas del historial: son operaciones reales de la cuenta (no un backtest) y deben
+  contar en las estadísticas y la búsqueda de trampas; se distinguen con
+  data_quality["importado"] = true.
 """
 
 import uuid
@@ -36,6 +39,7 @@ from supervisor.models.enums import (
     AccountType,
     Direction,
     ExitReason,
+    RawEventOrigin,
     RawEventStatus,
     TradeEventType,
     TradeSource,
@@ -618,6 +622,10 @@ def handle_deal(
         )
 
     if created:
+        if raw.origin == RawEventOrigin.HISTORY_IMPORT:
+            # Nació de la importación de historial (script SupervisorImportHistory): sin fotos
+            # de cuenta ni cambios de SL/TP intermedios, solo lo que guarda el historial.
+            set_quality(trade, "importado", True)
         resolve_deployment(session, trade)
         session.flush()
         first = session.scalar(

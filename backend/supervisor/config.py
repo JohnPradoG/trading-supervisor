@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     worker_poll_interval_seconds: float = Field(default=2.0, gt=0)
     # Eventos por lote; cada uno se procesa en su propio savepoint.
     worker_batch_size: int = Field(default=50, ge=1, le=1000)
+    # Eventos de una importación de historial (origin HISTORY_IMPORT) por lote, como mucho. Los
+    # del EA en vivo se atienden siempre antes; la importación avanza con lo que sobra del lote.
+    worker_import_batch_size: int = Field(default=20, ge=1, le=1000)
     # Primer reintento de un evento diferido; se duplica en cada intento hasta el máximo.
     worker_retry_base_seconds: int = Field(default=30, ge=1)
     worker_retry_max_seconds: int = Field(default=900, ge=1)

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from supervisor.models.bots import SEMVER_REGEX
 from supervisor.models.enums import BotStatus
@@ -69,13 +69,25 @@ class VersionOut(_Out):
 
 
 class DeploymentCreate(_In):
+    """Despliegue de una versión. started_at puede estar en el pasado (historial importado) y
+    ended_at permite registrar de una vez un periodo ya terminado: "la v1.0 corrió con este
+    magic de enero a septiembre". Nunca puede solaparse con otro despliegue del mismo magic,
+    cuenta y símbolo."""
+
     bot_version_id: uuid.UUID
     account_login: int = Field(gt=0)
     account_server: str = Field(min_length=1, max_length=128)
     symbol: str = Field(min_length=1, max_length=64)
     magic_number: int = Field(ge=1)
     started_at: UtcDatetime
+    ended_at: UtcDatetime | None = None
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def _dates(self) -> "DeploymentCreate":
+        if self.ended_at is not None and self.ended_at <= self.started_at:
+            raise ValueError("ended_at debe ser posterior a started_at")
+        return self
 
 
 class DeploymentEnd(_In):
@@ -108,3 +120,30 @@ class RawEventOut(_Out):
     received_at: datetime
     processed_at: datetime | None
     error: str | None
+
+
+class BackfillRequest(_In):
+    """Una página del backfill. Para seguir, repetir con el cursor (`next`) devuelto."""
+
+    after_time: UtcDatetime | None = None
+    after_id: uuid.UUID | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+    # Rango de hora de entrada (UTC) de las operaciones a revisar.
+    entry_from: UtcDatetime | None = None
+    entry_to: UtcDatetime | None = None
+
+    @model_validator(mode="after")
+    def _cursor(self) -> "BackfillRequest":
+        if (self.after_time is None) != (self.after_id is None):
+            raise ValueError("after_time y after_id van juntos")
+        return self
+
+
+class BackfillCursor(BaseModel):
+    after_time: datetime
+    after_id: uuid.UUID
+
+
+class BackfillOut(BaseModel):
+    stats: dict[str, int]
+    next: BackfillCursor | None

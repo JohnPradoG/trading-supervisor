@@ -28,6 +28,13 @@ class RawEventStatus(StrEnum):
     IGNORED = "IGNORED"
 
 
+class RawEventOrigin(StrEnum):
+    """Quién envió el evento: el EA en vivo o el script de importación de historial."""
+
+    EA = "EA"
+    HISTORY_IMPORT = "HISTORY_IMPORT"
+
+
 class TradeSource(StrEnum):
     LIVE = "LIVE"
     DEMO = "DEMO"
