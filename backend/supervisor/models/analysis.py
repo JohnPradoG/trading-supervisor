@@ -3,13 +3,12 @@
 Reglas:
 - Una variable que no se puede obtener queda NULL y su motivo va en trade_dna.null_reasons.
 - El DNA se calcula solo con datos anteriores a la entrada (velas cerradas): sin lookahead.
-- Los análisis son de solo inserción: una versión nueva del analizador crea filas nuevas.
+- DNA y análisis son de solo inserción: recalcular crea filas nuevas (versión + 1).
 - FACT es un dato medido; HYPOTHESIS es una explicación posible que se valida aparte.
 """
 
 import uuid
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -18,7 +17,6 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
-    Integer,
     Numeric,
     SmallInteger,
     String,
@@ -32,8 +30,6 @@ from supervisor.models.base import (
     Base,
     CreatedAt,
     Json,
-    Points,
-    Price,
     UTCDateTime,
     UUIDPk,
     str_enum,
@@ -44,94 +40,71 @@ Ratio = Numeric(14, 6)
 
 
 class FeatureDefinition(Base):
-    """Catálogo versionado de variables del DNA: cómo se calcula cada una y cuándo es NULL."""
+    """Catálogo versionado de variables del Trading DNA (fase 8): qué mide cada una, su tipo
+    (numeric, boolean o categorical, que la fase 9 usa para generar condiciones) y cuándo
+    queda NULL. De solo inserción: cambiar una definición = una fila con versión nueva."""
 
     __tablename__ = "feature_definitions"
+    __table_args__ = (
+        CheckConstraint("value_type IN ('numeric', 'boolean', 'categorical')", name="value_type"),
+    )
 
     name: Mapped[str] = mapped_column(String(64), primary_key=True)
     version: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
     group: Mapped[str] = mapped_column(String(32))
     timeframe: Mapped[str | None] = mapped_column(String(8))
+    value_type: Mapped[str] = mapped_column(String(16))
+    label: Mapped[str] = mapped_column(String(128))
+    unit: Mapped[str | None] = mapped_column(String(16))
+    # La fase 9 solo busca patrones en variables comparables entre operaciones (no en
+    # precios absolutos como el nivel de una EMA).
+    searchable: Mapped[bool] = mapped_column(Boolean)
     formula_doc: Mapped[str] = mapped_column(Text)
     null_policy: Mapped[str] = mapped_column(Text)
+    # False si todavía no hay fuente de datos (p. ej. noticias): siempre NULL.
     available: Mapped[bool] = mapped_column(Boolean)
     created_at: Mapped[CreatedAt]
 
 
 class TradeDna(Base):
-    """Condiciones de mercado en el momento de la entrada. Una fila por versión del conjunto de
-    variables; recalcular con otra versión añade una fila, no sobrescribe."""
+    """Condiciones de mercado en el momento de la entrada (fase 8).
+
+    De solo inserción, como el análisis: recalcular con otra versión del conjunto de
+    variables o con más velas crea una fila con dna_version + 1, solo si cambia input_hash
+    (sha256 de la operación, las velas usadas, las noticias y los parámetros). La vigente es
+    la de mayor dna_version.
+
+    Sin lookahead: solo se usan velas M1 con bar_time + 1 min <= data_cutoff (la hora de
+    entrada) y velas agregadas ya cerradas; un CHECK lo garantiza para la última vela M1.
+    `features` es {nombre: valor} con los nombres de feature_definitions; una variable que
+    no se pudo calcular vale null y su motivo va en `null_reasons`."""
 
     __tablename__ = "trade_dna"
+    __table_args__ = (
+        UniqueConstraint("trade_id", "dna_version"),
+        CheckConstraint(
+            "last_bar_time IS NULL OR last_bar_time + interval '1 minute' <= data_cutoff",
+            name="no_lookahead",
+        ),
+    )
 
-    trade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("trades.trade_id"), primary_key=True)
-    feature_set_version: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
-    computed_at: Mapped[CreatedAt]
+    id: Mapped[UUIDPk]
+    trade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("trades.trade_id"), index=True)
+    dna_version: Mapped[int] = mapped_column(SmallInteger)
+    feature_set_version: Mapped[int] = mapped_column(SmallInteger)
+    input_hash: Mapped[str] = mapped_column(String(64))
     source: Mapped[DataOrigin] = mapped_column(str_enum(DataOrigin))
-    # Última vela cerrada usada en el cálculo; debe ser anterior a la entrada.
+    # Hora de entrada: todo dato usado es estrictamente anterior.
     data_cutoff: Mapped[UTCDateTime]
-
-    # Tendencia por timeframe: -1 bajista, 0 rango, 1 alcista
-    trend_m1: Mapped[int | None] = mapped_column(SmallInteger)
-    trend_m5: Mapped[int | None] = mapped_column(SmallInteger)
-    trend_m15: Mapped[int | None] = mapped_column(SmallInteger)
-    trend_h1: Mapped[int | None] = mapped_column(SmallInteger)
-    trend_h4: Mapped[int | None] = mapped_column(SmallInteger)
-    trend_d1: Mapped[int | None] = mapped_column(SmallInteger)
-
-    # Indicadores en el timeframe principal del bot
-    ema20: Mapped[Price | None]
-    ema50: Mapped[Price | None]
-    ema200: Mapped[Price | None]
-    rsi: Mapped[Decimal | None] = mapped_column(Ratio)
-    atr: Mapped[Price | None]
-    roc: Mapped[Decimal | None] = mapped_column(Ratio)
-    adx: Mapped[Decimal | None] = mapped_column(Ratio)
-
-    # Estructura
-    market_structure: Mapped[str | None] = mapped_column(String(16))
-    last_swing_high: Mapped[Price | None]
-    last_swing_low: Mapped[Price | None]
-    bos_recent: Mapped[bool | None] = mapped_column(Boolean)
-    choch_recent: Mapped[bool | None] = mapped_column(Boolean)
-    is_range: Mapped[bool | None] = mapped_column(Boolean)
-
-    # Liquidez
-    liquidity_sweep: Mapped[bool | None] = mapped_column(Boolean)
-    equal_highs: Mapped[bool | None] = mapped_column(Boolean)
-    equal_lows: Mapped[bool | None] = mapped_column(Boolean)
-    dist_prev_high_points: Mapped[Points | None]
-    dist_prev_low_points: Mapped[Points | None]
-
-    # FVG y order blocks
-    fvg_present: Mapped[bool | None] = mapped_column(Boolean)
-    fvg_direction: Mapped[int | None] = mapped_column(SmallInteger)
-    fvg_size_points: Mapped[Points | None]
-    fvg_distance_points: Mapped[Points | None]
-    ob_present: Mapped[bool | None] = mapped_column(Boolean)
-    ob_direction: Mapped[int | None] = mapped_column(SmallInteger)
-    ob_distance_points: Mapped[Points | None]
-
-    # Volatilidad
-    spread_points: Mapped[Points | None]
-    recent_range_points: Mapped[Points | None]
-    relative_volatility: Mapped[Decimal | None] = mapped_column(Ratio)
-
-    # Tiempo (siempre calculado desde UTC)
-    weekday: Mapped[int | None] = mapped_column(SmallInteger)
-    hour_utc: Mapped[int | None] = mapped_column(SmallInteger)
-    session_asia: Mapped[bool | None] = mapped_column(Boolean)
-    session_london: Mapped[bool | None] = mapped_column(Boolean)
-    session_newyork: Mapped[bool | None] = mapped_column(Boolean)
-
-    # Noticias (NULL hasta que exista la fuente de calendario)
-    news_nearby: Mapped[bool | None] = mapped_column(Boolean)
-    minutes_to_news: Mapped[int | None] = mapped_column(Integer)
-    news_impact: Mapped[str | None] = mapped_column(String(16))
-    news_type: Mapped[str | None] = mapped_column(String(64))
-
-    extra: Mapped[Json]
+    # Inicio de la última vela M1 usada (NULL si no había ninguna).
+    last_bar_time: Mapped[UTCDateTime | None]
+    features: Mapped[Json]
     null_reasons: Mapped[Json]
+    # Cobertura de velas por timeframe y avisos.
+    data_quality: Mapped[Json]
+    # Resumen de las entradas (huellas para decidir si hay que recalcular).
+    inputs: Mapped[Json]
+    computed_at: Mapped[CreatedAt]
 
 
 class TradeAnalysis(Base):

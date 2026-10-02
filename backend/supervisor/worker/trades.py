@@ -29,6 +29,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from supervisor.analytics.analyzer import analyze_safely
+from supervisor.analytics.dna import compute_dna_safely
 from supervisor.config import Settings
 from supervisor.models import AccountSnapshot, Deployment, RawEvent, Terminal, Trade, TradeEvent
 from supervisor.models.enums import (
@@ -326,7 +327,9 @@ def _link_followers(session: Session, closed: Trade, settings: Settings) -> None
 # Recalcular la operación desde sus deals -------------------------------------------------------
 
 
-def recompute(session: Session, trade: Trade, acc: AccountInfo, settings: Settings) -> None:
+def recompute(
+    session: Session, trade: Trade, acc: AccountInfo, settings: Settings, created: bool = False
+) -> None:
     deals = deal_events(session, trade)
     entries = [d for d in deals if d.extra.get("entry") == DealEntry.IN.value]
     if not entries:
@@ -419,6 +422,9 @@ def recompute(session: Session, trade: Trade, acc: AccountInfo, settings: Settin
         resolve_deployment(session, trade)
         compute_risk(session, trade, first)
     session.flush()
+    if entry_changed and not created:
+        # Trading DNA (fase 8): la entrada cambió (deals fuera de orden), se recalcula.
+        compute_dna_safely(session, trade, settings, acc.broker_id)
 
     if trade.status == TradeStatus.CLOSED:
         if not was_closed or previous_close != trade.close_time:
@@ -622,7 +628,10 @@ def handle_deal(
         compute_risk(session, trade, first)
         link_reentry(session, trade, settings)
         wake_waiting(session, acc, ev.position_id)
-    recompute(session, trade, acc, settings)
+        # Trading DNA (fase 8): la entrada ya se conoce. Si faltan velas, el repaso lo
+        # recalcula cuando lleguen; un fallo no afecta al registro de la operación.
+        compute_dna_safely(session, trade, settings, acc.broker_id)
+    recompute(session, trade, acc, settings, created)
     return PROCESSED
 
 

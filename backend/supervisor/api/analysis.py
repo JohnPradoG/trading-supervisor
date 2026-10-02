@@ -13,10 +13,15 @@ from supervisor.schemas.analysis import (
     AnalysisOut,
     AnalysisVersionOut,
     CompareVersionsOut,
+    DnaOut,
+    DnaVersionOut,
+    FeatureDefinitionOut,
     FindingOut,
     StatsOut,
     TradeAnalysisOut,
+    TradeDnaOut,
 )
+from supervisor.services import dna as dna_service
 from supervisor.services import stats as stats_service
 from supervisor.services.analysis import get_trade_analysis
 from supervisor.services.stats import StatsFilters
@@ -35,11 +40,12 @@ def get_stats(
     source: TradeSource | None = None,
     date_from: Annotated[datetime | None, Query(alias="from")] = None,
     date_to: Annotated[datetime | None, Query(alias="to")] = None,
-    group_by: Annotated[str | None, Query(max_length=64)] = None,
+    group_by: Annotated[str | None, Query(max_length=128)] = None,
 ):
     """Métricas de operaciones cerradas. `from`/`to` filtran por hora de cierre; `group_by`
     admite hasta dos dimensiones separadas por coma (bot, version, symbol, direction, weekday,
-    hour, session, timeframe, account, source). Las operaciones sin bot van en `unassigned`."""
+    hour, session, timeframe, account, source o dna:<variable>). Las operaciones sin bot van
+    en `unassigned`."""
     filters = StatsFilters(
         bot_id=bot_id,
         version_id=version_id,
@@ -107,4 +113,43 @@ def trade_analysis(
         analysis=analysis,
         history=[AnalysisVersionOut.model_validate(h) for h in view.history],
         note=note,
+    )
+
+
+@router.get("/dna/features", response_model=list[FeatureDefinitionOut])
+def dna_features():
+    """Catálogo de variables del Trading DNA: tipo, timeframe, definición y cuándo es NULL."""
+    return dna_service.feature_catalog()
+
+
+@router.get("/trades/{trade_id}/dna", response_model=TradeDnaOut)
+def trade_dna(
+    trade_id: uuid.UUID,
+    session: SessionDep,
+    version: Annotated[int | None, Query(ge=1)] = None,
+):
+    """Trading DNA vigente de la operación (o la `version` pedida): condiciones de mercado al
+    entrar, calculadas solo con velas cerradas antes de la entrada, agrupadas por sección y
+    con el motivo de cada NULL. `history` lista todas las versiones."""
+    view = dna_service.get_trade_dna(session, trade_id, version)
+    dna = None
+    if view.dna is not None:
+        d = view.dna
+        dna = DnaOut(
+            **DnaVersionOut.model_validate(d).model_dump(),
+            data_cutoff=d.data_cutoff,
+            last_bar_time=d.last_bar_time,
+            data_quality=d.data_quality,
+            sections=dna_service.sections(d),
+            features=d.features,
+            null_reasons=d.null_reasons,
+        )
+    return TradeDnaOut(
+        trade_id=trade_id,
+        dna=dna,
+        history=[DnaVersionOut.model_validate(h) for h in view.history],
+        note=None
+        if dna
+        else "aún sin DNA: el worker lo calcula al registrar la operación "
+        "o en su próximo repaso",
     )

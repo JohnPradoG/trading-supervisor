@@ -376,6 +376,35 @@ def trade_analysis(session: Session, trade_id: uuid.UUID) -> dict[str, Any] | No
     }
 
 
+def trade_dna(session: Session, trade_id: uuid.UUID) -> dict[str, Any] | None:
+    """Trading DNA vigente (fase 8) en la forma que usa templates/partials/dna.html. None si
+    el worker aún no lo calculó."""
+    from supervisor.services.dna import get_trade_dna, sections
+
+    dna = get_trade_dna(session, trade_id).dna
+    if dna is None:
+        return None
+    timeframes = (dna.data_quality or {}).get("timeframes", {})
+    return {
+        "dna_version": dna.dna_version,
+        "feature_set_version": dna.feature_set_version,
+        "computed_at": dna.computed_at,
+        "data_cutoff": dna.data_cutoff,
+        "last_bar_time": dna.last_bar_time,
+        "sections": sections(dna),
+        "coverage": [
+            {"tf": tf, **info}
+            for tf, info in sorted(timeframes.items(), key=lambda item: _TF_ORDER.get(item[0], 99))
+        ],
+        "note": (dna.data_quality or {}).get("timeframe_principal"),
+        "nulls": sum(1 for v in (dna.features or {}).values() if v is None),
+        "total": len(dna.features or {}),
+    }
+
+
+_TF_ORDER = {"M1": 0, "M5": 1, "M15": 2, "M30": 3, "H1": 4, "H4": 5, "D1": 6}
+
+
 # Series para gráficos ----------------------------------------------------------------------
 
 

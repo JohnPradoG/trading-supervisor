@@ -4,6 +4,8 @@
 - Operaciones sin despliegue: si después se registró el despliegue que cubría la entrada, se
   asignan su bot y versión.
 - Riesgo sin balance: si llegó después la foto de cuenta, se completa risk_percent.
+- Trading DNA: lo calcula si falta, si cambió la operación o la versión del conjunto de
+  variables, o si le faltaban velas y han llegado (supervisor.analytics.dna.recompute_recent).
 - Análisis post-operación: crea versiones nuevas cuando cambian sus entradas (ver
   supervisor.analytics.analyzer.reanalyze_recent). Va al final para ver los cambios anteriores.
 """
@@ -16,6 +18,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from supervisor.analytics.analyzer import reanalyze_recent
+from supervisor.analytics.dna import recompute_recent
 from supervisor.config import Settings
 from supervisor.models import Account, Trade, TradeEvent
 from supervisor.models.enums import TradeEventType, TradeStatus
@@ -101,6 +104,10 @@ def run_maintenance(session: Session, settings: Settings, now: datetime | None =
     _each(session, list(no_balance), risk, stats, "riesgos")
     session.flush()
 
+    dna = recompute_recent(session, settings, now)
+    stats["dna"] = dna["creado"]
+    if dna["error"]:
+        stats["dna_fallidos"] = dna["error"]
     analysis = reanalyze_recent(session, settings, now)
     stats["analisis"] = analysis["creado"]
     if analysis["error"]:

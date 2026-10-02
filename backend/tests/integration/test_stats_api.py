@@ -185,7 +185,8 @@ def test_stats_group_by(client: TestClient, book: dict) -> None:
     assert {g["key"]["bot"] for g in body["groups"]} == {book["bot_id"]}
 
     for bad, message in (
-        ("dna", "fase 8"),
+        ("dna", "dna:<variable>"),
+        ("dna:no_existe", "desconocida"),
         ("color", "no válido"),
         ("bot,symbol,hour", "como mucho 2"),
         ("hour,hour", "repite"),
@@ -248,7 +249,9 @@ def test_stats_cli_table(
     assert "SIN ASIGNAR" not in out  # filtrado por bot
     cli.main(["stats", "--symbol", book["symbol"]])
     assert "SIN ASIGNAR (aparte)" in capsys.readouterr().out
-    with pytest.raises(SystemExit, match="fase 8"):
+    with pytest.raises(SystemExit, match="dna:<variable>"):
         cli.main(["stats", "--group-by", "dna"])
+    cli.main(["stats", "--symbol", book["symbol"], "--group-by", "dna:sesion"])
+    assert "sesion=" in capsys.readouterr().out
     with pytest.raises(SystemExit, match="No existe el bot"):
         cli.main(["stats", "--bot", "no-existe"])

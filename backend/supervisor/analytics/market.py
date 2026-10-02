@@ -148,6 +148,10 @@ def _check(
     return None
 
 
+# Nombre público para el Trading DNA (fase 8), que aplica las mismas exigencias.
+check_bars = _check
+
+
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat()
 
