@@ -13,8 +13,15 @@ from sqlalchemy.orm import Session
 from supervisor.models import RawEvent, Terminal, Trade, TradeEvent
 from tests.conftest import ADMIN_TOKEN, _headers
 
-# Hora base en el pasado reciente (la API rechaza horas futuras), en minuto exacto.
-BASE = (datetime.now(UTC) - timedelta(hours=3)).replace(second=0, microsecond=0)
+# Hora base en el pasado reciente (la API rechaza horas futuras), en minuto exacto. La historia
+# sintética lleva una onda de periodo 2π horas (history_price); BASE se ancla a la misma fase de
+# esa onda para que las tendencias esperadas no dependan de la hora a la que corren las pruebas.
+WAVE_PERIOD_SECONDS = 2 * math.pi * 3600
+WAVE_PHASE_SECONDS = 0.8 * 3600
+_recent = datetime.now(UTC) - timedelta(hours=3)
+BASE = (
+    _recent - timedelta(seconds=(_recent.timestamp() - WAVE_PHASE_SECONDS) % WAVE_PERIOD_SECONDS)
+).replace(second=0, microsecond=0)
 SYMBOL = "USTEC_x100"
 MAGIC = 20260903
 # USTEC en Exness: 2 decimales, 1 tick = 0.01 vale 0.01 USD por lote.
