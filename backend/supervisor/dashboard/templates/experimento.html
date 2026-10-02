@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% from "partials/lab.html" import side_by_side, traps, curves %}
+{% block title %}Experimento {{ e.code }}{% endblock %}
+{% block content %}
+<p class="muted small"><a href="/dashboard/laboratorio">← Laboratorio</a></p>
+<h1>Experimento {{ e.code }} <span class="muted small">{{ e.title }}</span></h1>
+
+<section class="card">
+  <div class="card-head"><h2>Definición</h2><span class="badge muted-badge">{{ e.status_text }}</span></div>
+  <dl class="kv">
+    <dt>Bot base</dt><dd>{{ e.base_version }}{% if e.symbol %} · {{ e.symbol }}{% endif %}</dd>
+    {% if e.candidate_version %}<dt>Versión candidata</dt><dd>{{ e.candidate_version }}</dd>{% endif %}
+    <dt>Cambio</dt><dd>{{ e.change_description }}</dd>
+    <dt>Filtro</dt><dd>{{ e.filter_text or 'sin filtro estructurado (solo texto)' }}</dd>
+    {% if e.hypothesis %}<dt>Hipótesis</dt><dd><span class="badge {{ 'bad' if e.hypothesis.label == 'trampa validada' else 'muted-badge' }}">{{ e.hypothesis.label }}</span> {{ e.hypothesis.statement }}</dd>{% endif %}
+    {% if e.conclusion %}<dt>Conclusión</dt><dd>{{ e.conclusion }}</dd>{% endif %}
+    <dt>Creado</dt><dd>{{ e.created_at | utc }} UTC</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Comparación lado a lado</h2><span class="muted small">calculada ahora con los datos actuales</span></div>
+  {% for w in comparison.avisos %}<p class="notice">{{ w }}</p>{% endfor %}
+  {% for a in comparison.brazos %}{% for w in a.avisos %}<p class="notice small"><strong>{{ a.etiqueta }}:</strong> {{ w }}</p>{% endfor %}{% endfor %}
+  {{ side_by_side(tables) }}
+  <p class="muted small">{{ comparison.nota }}</p>
+  <h3>Curvas de equity</h3>
+  {{ curves('/dashboard/api/laboratorio/' ~ e.number ~ '/curvas') }}
+  <h3>Trampas de cada versión</h3>
+  {{ traps(comparison.brazos) }}
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Revisiones de resultados</h2><span class="muted small">de solo inserción</span></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Rev.</th><th>Tipo</th><th>Fecha (UTC)</th><th>Resumen</th><th>Notas</th></tr></thead>
+    <tbody>
+    {% for r in e.results %}{% set res = r.results %}
+      <tr>
+        <td>{{ r.revision }}</td>
+        <td class="nowrap">{{ r.kind_text }}</td>
+        <td class="nowrap">{{ r.created_at | utc('%Y-%m-%d %H:%M') }}</td>
+        <td>
+          {% if r.kind == 'FILTRO' %}{% set seg = res.tramos[res.titular] %}
+            {{ res.titular | replace('_', ' ') }}: original n={{ seg.original.n_trades }}, {{ seg.original.expectancy_r | num }} R →
+            filtrado n={{ seg.filtrado.n_trades }}, {{ seg.filtrado.expectancy_r | num }} R
+          {% elif r.kind == 'BACKTEST' %}
+            {{ res.etiqueta }} · {{ res.formato }} · n={{ res.metricas.n_trades }}, neto {{ res.metricas.cumulative_return | num }}
+          {% else %}
+            {% if res.estado %}estado {{ res.estado }}{% endif %}{% if res.conclusion %} · conclusión: {{ res.conclusion }}{% endif %}
+          {% endif %}
+        </td>
+        <td class="muted small">{{ r.notes or '' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">Sin resultados todavía.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if e.backtests %}
+  <h3>Backtests importados</h3>
+  <ul class="findings">
+  {% for b in e.backtests %}<li><span class="badge muted-badge">backtest</span> {{ b.label }} · {{ b.version }} · {{ b.symbol }} · {{ b.period_start }} → {{ b.period_end }} · {{ b.report_format }}{% if b.report_file %} ({{ b.report_file }}){% endif %} · n={{ b.n_trades }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  <p class="muted small">Más resultados: <span class="mono">supervisor-cli experiment run-filter --id {{ e.number }}</span>, <span class="mono">supervisor-cli experiment import-backtest --id {{ e.number }} --file informe.csv</span> o <span class="mono">POST /v1/experiments/{{ e.number }}/backtests</span>.</p>
+</section>
+{% endblock %}

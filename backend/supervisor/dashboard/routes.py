@@ -1,7 +1,8 @@
 """Páginas del dashboard (/dashboard): HTML renderizado en el servidor con Jinja2 + HTMX.
 
 Solo lectura: ninguna ruta modifica datos de trading ni envía nada a MT5. Los únicos POST son
-login y logout. Las horas se muestran siempre en UTC.
+login, logout y "crear experimento" desde una trampa validada (escribe solo en las tablas del
+laboratorio, con token CSRF). Las horas se muestran siempre en UTC.
 """
 
 import logging
@@ -23,8 +24,9 @@ from supervisor.dashboard import auth
 from supervisor.dashboard.auth import DashboardSession
 from supervisor.models.enums import Direction, TradeStatus
 from supervisor.services import dashboard as svc
+from supervisor.services import lab as lab_svc
 from supervisor.services import patterns as patterns_svc
-from supervisor.services.errors import NotFound
+from supervisor.services.errors import NotFound, ServiceError
 
 log = logging.getLogger("supervisor.dashboard")
 
@@ -475,3 +477,161 @@ def sistema(request: Request, dash: DashSession, session: SessionDep) -> HTMLRes
         "unassigned": svc.unassigned_trades(session),
     }
     return _render(request, "sistema.html", context, dash)
+
+
+# Laboratorio -----------------------------------------------------------------------------
+
+SEGMENTS = (
+    ("fuera_de_muestra", "Fuera de muestra (titular)"),
+    ("dentro_de_muestra", "Dentro de muestra (optimista)"),
+    ("todo", "Todo el periodo"),
+)
+
+
+def _segment_tables(arms: list[dict]) -> list[dict]:
+    """Una tabla por tramo con los brazos que lo tienen (los backtests solo tienen "todo")."""
+    tables = []
+    for key, title in SEGMENTS:
+        columns = [(a, a["metricas"][key]) for a in arms if key in a["metricas"]]
+        if columns:
+            tables.append({"key": key, "title": title, "columns": columns})
+    return tables
+
+
+def _series(arms: list[dict]) -> list[dict]:
+    return [
+        {
+            "label": a["etiqueta"],
+            "fuente": a["fuente"],
+            "points": [{"x": t, "y": y} for t, y in a["curva"]],
+        }
+        for a in arms
+    ]
+
+
+@router.get("/laboratorio")
+def laboratorio(request: Request, dash: DashSession, session: SessionDep) -> HTMLResponse:
+    context = {
+        "nav": "laboratorio",
+        "experiments": lab_svc.list_experiments(session),
+        "versions": lab_svc.versions_for_select(session),
+    }
+    return _render(request, "laboratorio.html", context, dash)
+
+
+def _compare_pair(
+    session, settings, a: str | None, b: str | None, symbol: str | None, samples: int | None = None
+):
+    va, vb = _parse_uuid(a), _parse_uuid(b)
+    if va is None or vb is None:
+        raise ServiceError("Elige dos versiones distintas.")
+    return lab_svc.compare_two_versions(
+        session, settings, va, vb, (symbol or "").strip()[:64] or None, samples
+    )
+
+
+@router.get("/laboratorio/comparar")
+def comparar(
+    request: Request,
+    dash: DashSession,
+    session: SessionDep,
+    settings: SettingsDep,
+    a: str | None = None,
+    b: str | None = None,
+    symbol: str | None = None,
+) -> HTMLResponse:
+    context: dict = {"nav": "laboratorio", "versions": lab_svc.versions_for_select(session)}
+    try:
+        pair = _compare_pair(session, settings, a, b, symbol)
+    except ServiceError as exc:
+        error = exc.message if isinstance(exc, NotFound) else "Elige dos versiones distintas."
+        context.update({"error": error, "pair": None, "selected": {"a": a, "b": b}})
+        return _render(request, "comparar.html", context, dash)
+    arms = [pair["a"], pair["b"]]
+    query = urlencode({k: v for k, v in {"a": a, "b": b, "symbol": symbol}.items() if v})
+    context.update(
+        {
+            "pair": pair,
+            "arms": arms,
+            "tables": _segment_tables(arms),
+            "selected": {"a": a, "b": b, "symbol": symbol or ""},
+            "curves_url": f"/dashboard/api/laboratorio/comparar/curvas?{query}",
+        }
+    )
+    return _render(request, "comparar.html", context, dash)
+
+
+@router.get("/api/laboratorio/comparar/curvas")
+def comparar_curvas(
+    dash: DashSession,
+    session: SessionDep,
+    settings: SettingsDep,
+    a: str | None = None,
+    b: str | None = None,
+    symbol: str | None = None,
+) -> JSONResponse:
+    try:
+        pair = _compare_pair(session, settings, a, b, symbol, samples=0)
+    except ServiceError as exc:
+        return JSONResponse({"detail": exc.message}, status_code=exc.status_code)
+    return JSONResponse(
+        {"series": _series([pair["a"], pair["b"]])}, headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.post("/laboratorio/crear")
+def crear_experimento(
+    request: Request,
+    dash: DashSession,
+    session: SessionDep,
+    settings: SettingsDep,
+    hypothesis_id: Annotated[str, Form(max_length=64)] = "",
+    csrf_token: Annotated[str, Form(max_length=128)] = "",
+) -> Response:
+    """Crea un experimento desde una trampa validada y calcula su filtro contrafactual."""
+    if not auth.same_origin(request) or not auth.tokens_match(dash.csrf_token, csrf_token):
+        log.warning(
+            "crear experimento rechazado por CSRF", extra={"client": auth.client_ip(request)}
+        )
+        return JSONResponse({"detail": "token CSRF inválido"}, status_code=403)
+    trap_id = _parse_uuid(hypothesis_id)
+    if trap_id is None:
+        return JSONResponse({"detail": "trampa no válida"}, status_code=400)
+    try:
+        exp = lab_svc.create_from_trap(session, settings, trap_id)
+    except ServiceError as exc:
+        return JSONResponse({"detail": exc.message}, status_code=exc.status_code)
+    log.info("experimento creado desde el dashboard", extra={"experiment": exp.code})
+    return RedirectResponse(f"/dashboard/laboratorio/{exp.number}", status_code=303)
+
+
+@router.get("/laboratorio/{number}")
+def experimento(
+    request: Request, number: int, dash: DashSession, session: SessionDep, settings: SettingsDep
+) -> HTMLResponse:
+    try:
+        exp = lab_svc.get_experiment(session, number)
+    except NotFound:
+        return _render(request, "no_encontrada.html", {"nav": "laboratorio"}, dash, 404)
+    comparison = lab_svc.experiment_comparison(session, settings, exp)
+    context = {
+        "nav": "laboratorio",
+        "e": lab_svc.experiment_detail(session, exp),
+        "comparison": comparison,
+        "tables": _segment_tables(comparison["brazos"]),
+    }
+    return _render(request, "experimento.html", context, dash)
+
+
+@router.get("/api/laboratorio/{number}/curvas")
+def experimento_curvas(
+    number: int, dash: DashSession, session: SessionDep, settings: SettingsDep
+) -> JSONResponse:
+    try:
+        exp = lab_svc.get_experiment(session, number)
+    except NotFound:
+        return JSONResponse({"detail": "experimento no encontrado"}, status_code=404)
+    comparison = lab_svc.experiment_comparison(session, settings, exp, samples=0)
+    return JSONResponse(
+        {"series": _series(comparison["brazos"])}, headers={"Cache-Control": "no-store"}
+    )

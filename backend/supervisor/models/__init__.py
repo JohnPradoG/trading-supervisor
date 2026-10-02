@@ -15,6 +15,7 @@ from supervisor.models.research import (
     BacktestRun,
     DataSplit,
     Experiment,
+    ExperimentResult,
     Hypothesis,
     PatternRun,
     PatternTest,
@@ -55,5 +56,6 @@ __all__ = [
     "PatternTest",
     "Experiment",
     "BacktestRun",
+    "ExperimentResult",
     "Alert",
 ]

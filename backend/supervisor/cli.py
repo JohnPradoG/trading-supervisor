@@ -14,12 +14,17 @@
     ts stats [--bot EA_Nasdaq_FVG_Retest] [--group-by version,session] [--from 2026-10-01]
     ts patterns --version <bot_version_id> [--symbol USTEC_x100] [--report-only]
     ts backfill [--from 2026-01-01] [--page-size 200]
+    ts experiment create --base <bot_version_id> --title "..." --change "..." [--hypothesis <id>]
+    ts experiment run-filter --id 1
+    ts experiment import-backtest --id 1 --file informe.csv   (o --file - por la entrada)
+    ts experiment show --id 1 | ts experiment list
 
 Las cuentas y las API keys se crean aquí y no por HTTP: así una API key comprometida o un
 token de administración filtrado no permiten fabricar credenciales nuevas.
 """
 
 import argparse
+import json
 import sys
 import uuid
 from collections import Counter
@@ -37,6 +42,7 @@ from supervisor.models import Account, ApiClient, Bot, BotVersion, Broker, RawEv
 from supervisor.models.enums import AccountType, MarginMode, RawEventStatus, TradeSource
 from supervisor.security.api_keys import generate_api_key
 from supervisor.services import dna as dna_service
+from supervisor.services import lab as lab_service
 from supervisor.services import patterns as patterns_service
 from supervisor.services import stats as stats_service
 from supervisor.services.errors import ServiceError
@@ -550,6 +556,224 @@ def backfill(args: argparse.Namespace) -> None:
         print("Hay operaciones nuevas en versiones de bot: ejecuta `patterns --version <id>`.")
 
 
+LAB_HEADER = (
+    "Brazo",
+    "Tramo",
+    "n",
+    "Win% [IC95]",
+    "PF [IC95]",
+    "Exp. R [IC95]",
+    "Neto",
+    "Max DD [IC95]",
+    "Aviso",
+)
+
+
+def _pair(values: list | None, places: int = 2) -> str:
+    return f" [{_num(values[0], places)}, {_num(values[1], places)}]" if values else ""
+
+
+def lab_table(rows: list[tuple[str, str, dict[str, Any]]]) -> str:
+    """Tabla del laboratorio: un brazo y tramo por fila."""
+    lines = [LAB_HEADER]
+    for arm, segment, m in rows:
+        lines.append(
+            (
+                arm,
+                segment.replace("_", " "),
+                str(m["n_trades"]),
+                _pct(m["win_rate"]) + _ci(m["win_rate_ci95"], pct=True),
+                _pf(m) + _pair(m.get("profit_factor_ic95")),
+                _num(m["expectancy_r"]) + _ci(m["expectancy_r_ci95"]),
+                _num(m["cumulative_return"]),
+                _num(m["max_drawdown"]) + _pair(m.get("max_drawdown_ic95")),
+                "muestra pequeña" if m["sample_warning"] else "",
+            )
+        )
+    widths = [max(len(row[i]) for row in lines) for i in range(len(LAB_HEADER))]
+    out = []
+    for n, row in enumerate(lines):
+        out.append("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+        if n == 0:
+            out.append("  ".join("-" * w for w in widths))
+    return "\n".join(out)
+
+
+SEGMENT_ORDER = ("fuera_de_muestra", "dentro_de_muestra", "todo")
+
+
+def print_filter_result(results: dict[str, Any]) -> None:
+    print(f"Filtro: {results['filtro']['texto']}")
+    pop = results["poblacion"]
+    print(f"Operaciones reales de {pop['version']}: {pop['operaciones']}")
+    print(f"Titular: {results['titular'].replace('_', ' ')}")
+    rows = []
+    for segment in SEGMENT_ORDER:
+        seg = results["tramos"].get(segment)
+        if seg is None:
+            continue
+        for arm in ("original", "filtrado", "evitadas"):
+            rows.append((arm, segment, seg[arm]))
+    print(lab_table(rows))
+    for segment in SEGMENT_ORDER:
+        seg = results["tramos"].get(segment)
+        if seg and seg["evitadas_vs_mantenidas"]:
+            w = seg["evitadas_vs_mantenidas"]
+            print(
+                f"{segment.replace('_', ' ')}: evitadas - mantenidas = {w['diferencia_r']:+.2f} R "
+                f"[{w['ic95'][0]:+.2f}, {w['ic95'][1]:+.2f}], p={w['p_valor']:.4f}; "
+                f"sin dato: {seg['sin_dato']}"
+            )
+    for warning in results["avisos"]:
+        print(f"AVISO: {warning}")
+
+
+def _experiment(session, ref: str):
+    try:
+        return lab_service.get_experiment(session, ref)
+    except ServiceError as exc:
+        sys.exit(exc.message)
+
+
+def experiment_create(args: argparse.Namespace) -> None:
+    filter_spec = None
+    if args.filter_json:
+        try:
+            filter_spec = json.loads(args.filter_json)
+        except json.JSONDecodeError as exc:
+            sys.exit(f"--filter-json no es JSON válido: {exc}")
+    with session_scope() as session:
+        try:
+            exp = lab_service.create_experiment(
+                session,
+                title=args.title,
+                base_version_id=args.base,
+                change_description=args.change,
+                candidate_version_id=args.candidate,
+                hypothesis_id=args.hypothesis,
+                symbol=args.symbol,
+                filter_spec=filter_spec,
+            )
+        except ServiceError as exc:
+            sys.exit(exc.message)
+        detail = lab_service.experiment_detail(session, exp)
+    print(f"Experimento {detail['code']} creado: {detail['title']} ({detail['id']})")
+    if detail["filter_text"]:
+        print(
+            f"Filtro: {detail['filter_text']}. Siguiente: experiment run-filter --id "
+            f"{detail['number']}"
+        )
+
+
+def experiment_run_filter(args: argparse.Namespace) -> None:
+    settings = get_settings()
+    with session_scope() as session:
+        exp = _experiment(session, args.id)
+        try:
+            row = lab_service.run_filter(session, settings, exp, args.notes)
+        except ServiceError as exc:
+            sys.exit(exc.message)
+        code, revision, results = exp.code, row.revision, row.results
+    print(f"Experimento {code}: revisión {revision} (filtro contrafactual)")
+    print_filter_result(results)
+
+
+def experiment_import_backtest(args: argparse.Namespace) -> None:
+    settings = get_settings()
+    if args.file == "-":
+        data, name = sys.stdin.buffer.read(settings.lab_upload_max_bytes + 1), args.name
+    else:
+        try:
+            with open(args.file, "rb") as fh:
+                data = fh.read(settings.lab_upload_max_bytes + 1)
+        except OSError as exc:
+            sys.exit(f"No se pudo leer {args.file}: {exc}")
+        name = args.name or args.file
+    with session_scope() as session:
+        exp = _experiment(session, args.id)
+        try:
+            run, row = lab_service.import_backtest(
+                session,
+                settings,
+                exp,
+                data,
+                filename=name,
+                version_id=args.version,
+                label=args.label,
+                symbol=args.symbol,
+            )
+        except ServiceError as exc:
+            sys.exit(exc.message)
+        code, revision, results = exp.code, row.revision, row.results
+        label, fmt = run.label, run.report_format
+    print(f"Experimento {code}: revisión {revision}, backtest '{label}' importado ({fmt})")
+    print(lab_table([(f"backtest {label}", "todo", results["metricas"])]))
+    for warning in results["avisos"]:
+        print(f"AVISO: {warning}")
+
+
+def experiment_show(args: argparse.Namespace) -> None:
+    settings = get_settings()
+    with session_scope() as session:
+        exp = _experiment(session, args.id)
+        detail = lab_service.experiment_detail(session, exp)
+        comparison = lab_service.experiment_comparison(session, settings, exp)
+    print(f"Experimento {detail['code']}: {detail['title']} [{detail['status_text']}]")
+    print(
+        f"Bot base: {detail['base_version']}"
+        + (f" · {detail['symbol']}" if detail["symbol"] else "")
+    )
+    if detail["candidate_version"]:
+        print(f"Versión candidata: {detail['candidate_version']}")
+    print(f"Cambio: {detail['change_description']}")
+    if detail["filter_text"]:
+        print(f"Filtro: {detail['filter_text']}")
+    if detail["hypothesis"]:
+        h = detail["hypothesis"]
+        print(f"Hipótesis: [{h['label']}] {h['statement']}")
+    if detail["conclusion"]:
+        print(f"Conclusión: {detail['conclusion']}")
+    print(f"Revisiones: {len(detail['results'])}")
+    for r in detail["results"]:
+        print(
+            f"  {r['revision']}. {r['kind_text']} · {r['created_at']:%Y-%m-%d %H:%M} UTC"
+            + (f" · {r['notes']}" if r["notes"] else "")
+        )
+    rows = []
+    for arm in comparison["brazos"]:
+        for segment in SEGMENT_ORDER:
+            if segment in arm["metricas"]:
+                rows.append((arm["etiqueta"], segment, arm["metricas"][segment]))
+    print(lab_table(rows))
+    for arm in comparison["brazos"]:
+        traps = arm.get("trampas")
+        if traps and traps["validadas"]:
+            print(
+                f"Trampas validadas de {arm['etiqueta']}: "
+                + "; ".join(t["statement"] for t in traps["validadas"])
+            )
+    for warning in comparison["avisos"]:
+        print(f"AVISO: {warning}")
+    print(comparison["nota"])
+
+
+def experiment_list(_: argparse.Namespace) -> None:
+    with session_scope() as session:
+        items = lab_service.list_experiments(session)
+    if not items:
+        print("No hay experimentos.")
+    for e in items:
+        head = e["headline"]
+        extra = ""
+        if head:
+            extra = (
+                f" · {head['tramo'].replace('_', ' ')}: original {head['original']['n_trades']} "
+                f"ops {_num(head['original']['expectancy_r'])} R, filtrado "
+                f"{head['filtrado']['n_trades']} ops {_num(head['filtrado']['expectancy_r'])} R"
+            )
+        print(f"{e['code']} [{e['status_text']}] {e['title']} · {e['base_version']}{extra}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="supervisor-cli", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -634,6 +858,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--after-time", type=_date, help="reanudar: cursor impreso (hora)")
     p.add_argument("--after-id", type=_uuid, help="reanudar: cursor impreso (trade_id)")
     p.set_defaults(func=backfill)
+
+    exp = sub.add_parser("experiment", help="laboratorio: experimentos, filtros y backtests")
+    exp_sub = exp.add_subparsers(dest="experiment_command", required=True)
+    p = exp_sub.add_parser("create", help="crear un experimento (#001, #002...)")
+    p.add_argument("--base", type=_uuid, required=True, help="versión de bot base (id)")
+    p.add_argument("--title", required=True)
+    p.add_argument("--change", required=True, help="el cambio, en texto libre")
+    p.add_argument("--candidate", type=_uuid, help="versión de bot con el cambio (id)")
+    p.add_argument("--hypothesis", type=_uuid, help="hipótesis o trampa de la fase 9 (id)")
+    p.add_argument("--symbol")
+    p.add_argument(
+        "--filter-json",
+        help='filtro: {"modo":"excluir","condicion":{"tipo":"busqueda","clausulas":[...]}}',
+    )
+    p.set_defaults(func=experiment_create)
+    p = exp_sub.add_parser("run-filter", help="calcular el filtro contrafactual (nueva revisión)")
+    p.add_argument("--id", required=True, help="número o id del experimento")
+    p.add_argument("--notes")
+    p.set_defaults(func=experiment_run_filter)
+    p = exp_sub.add_parser("import-backtest", help="importar un resultado del Strategy Tester")
+    p.add_argument("--id", required=True, help="número o id del experimento")
+    p.add_argument("--file", required=True, help="CSV, HTML o XML; - para la entrada estándar")
+    p.add_argument("--name", help="nombre del archivo (con --file -)")
+    p.add_argument("--version", type=_uuid, help="versión probada (por defecto la base)")
+    p.add_argument("--label", help="etiqueta del brazo (base, candidata...)")
+    p.add_argument("--symbol")
+    p.set_defaults(func=experiment_import_backtest)
+    p = exp_sub.add_parser("show", help="experimento, revisiones y comparación lado a lado")
+    p.add_argument("--id", required=True, help="número o id del experimento")
+    p.set_defaults(func=experiment_show)
+    p = exp_sub.add_parser("list", help="lista de experimentos")
+    p.set_defaults(func=experiment_list)
     return parser
 
 

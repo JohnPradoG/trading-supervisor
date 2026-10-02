@@ -39,7 +39,13 @@ operaciones). Todo lo demás es <em>candidata, no validada</em>.</p>
     <tbody>
     {% for p in b.validated %}
       <tr>
-        <td><span class="badge bad">trampa validada</span> {{ p.statement }}{% if p.origin == 'REGLA' %} <span class="muted small">(regla de la fase 6)</span>{% endif %}</td>
+        <td><span class="badge bad">trampa validada</span> {{ p.statement }}{% if p.origin == 'REGLA' %} <span class="muted small">(regla de la fase 6)</span>{% endif %}
+          <form method="post" action="/dashboard/laboratorio/crear" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="hypothesis_id" value="{{ p.id }}">
+            <button type="submit" class="btn btn-ghost btn-small">Crear experimento</button>
+          </form>
+        </td>
         <td>{{ seg(p.fuera_de_muestra) }}</td>
         <td>{{ seg(p.entrenamiento) }}</td>
         <td>{{ seg(p.forward) }}</td>

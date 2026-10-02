@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% from "partials/lab.html" import version_form %}
+{% block title %}Laboratorio{% endblock %}
+{% block content %}
+<h1>Laboratorio</h1>
+<p class="muted">Cada experimento documenta un cambio sobre una versión de un bot y guarda sus resultados
+como revisiones que nunca se sobrescriben. El <strong>filtro contrafactual</strong> recalcula las operaciones
+reales de la versión base saltándose las que cumplen la condición: el resultado que cuenta es el de
+<strong>fuera de muestra</strong>; dentro de muestra es optimista y el comportamiento en vivo del bot
+filtrado es desconocido. Los backtests del Strategy Tester se guardan aparte y nunca se mezclan con lo real.</p>
+
+<section class="card">
+  <div class="card-head"><h2>Experimentos</h2></div>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Título</th><th>Bot base</th><th>Estado</th><th>Revisiones</th><th>Titular (expectativa R)</th><th>Creado (UTC)</th></tr></thead>
+    <tbody>
+    {% for e in experiments %}
+      <tr>
+        <td class="nowrap"><a href="/dashboard/laboratorio/{{ e.number }}">{{ e.code }}</a></td>
+        <td>{{ e.title }}</td>
+        <td class="nowrap">{{ e.base_version }}{% if e.symbol %} <span class="muted">{{ e.symbol }}</span>{% endif %}{% if e.candidate_version %}<br><span class="muted small">candidata {{ e.candidate_version }}</span>{% endif %}</td>
+        <td><span class="badge muted-badge">{{ e.status_text }}</span></td>
+        <td>{{ e.revisions }}</td>
+        <td class="nowrap">{% if e.headline %}
+          <span class="muted small">{{ e.headline.tramo | replace('_', ' ') }}:</span>
+          original <span class="{{ e.headline.original.expectancy_r | sign }}">{{ e.headline.original.expectancy_r | num }}</span> (n={{ e.headline.original.n_trades }}) →
+          filtrado <span class="{{ e.headline.filtrado.expectancy_r | sign }}">{{ e.headline.filtrado.expectancy_r | num }}</span> (n={{ e.headline.filtrado.n_trades }})
+        {% else %}<span class="muted">—</span>{% endif %}</td>
+        <td class="nowrap">{{ e.created_at | utc('%Y-%m-%d %H:%M') }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">Todavía no hay experimentos. Créalos desde una trampa validada en la página <a href="/dashboard/trampas">Trampas</a>, con <code>supervisor-cli experiment create</code> o con <code>POST /v1/experiments</code>.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card-head"><h2>Comparar dos versiones</h2></div>
+  {% if versions | length > 1 %}
+  {{ version_form(versions, None) }}
+  {% else %}
+  <p class="muted">Hace falta registrar al menos dos versiones de bot.</p>
+  {% endif %}
+</section>
+{% endblock %}

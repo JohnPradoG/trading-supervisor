@@ -10,6 +10,7 @@ Diseñado contra el overfitting:
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
@@ -22,8 +23,10 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from supervisor.models.base import (
@@ -40,6 +43,7 @@ from supervisor.models.enums import (
     ExperimentStatus,
     HypothesisStatus,
     SplitSegment,
+    TradeSource,
 )
 
 Stat = Numeric(14, 6)
@@ -171,38 +175,91 @@ class PatternTest(Base):
 
 
 class Experiment(Base):
+    """Experimento del laboratorio (fase 10): "#001 · bot base v1.0 · cambio: filtro de
+    tendencia H1". Lo que define el experimento (versión base, cambio, filtro, hipótesis) no
+    cambia una vez creado (trigger); solo cambian el estado y la última conclusión. Los
+    resultados van en experiment_results, de solo inserción, una revisión cada vez."""
+
     __tablename__ = "experiments"
 
     id: Mapped[UUIDPk]
-    code: Mapped[str] = mapped_column(String(16), unique=True)  # EXP-001
+    # Número correlativo (#001, #002...) y su código para mostrar.
+    number: Mapped[int] = mapped_column(Integer, unique=True)
+    code: Mapped[str] = mapped_column(String(16), unique=True)
+    title: Mapped[str] = mapped_column(String(200))
     base_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bot_versions.id"))
     candidate_version_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("bot_versions.id"))
     hypothesis_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("hypotheses.id"))
+    # Alcance opcional: solo las operaciones de este símbolo.
+    symbol: Mapped[str | None] = mapped_column(String(64))
     change_description: Mapped[str] = mapped_column(Text)
+    # Filtro estructurado opcional: {"modo": "excluir" | "solo", "condicion": <condition_spec
+    # de la fase 9>} (ver supervisor.analytics.lab).
+    filter_spec: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     status: Mapped[ExperimentStatus] = mapped_column(
         str_enum(ExperimentStatus), server_default=ExperimentStatus.DRAFT.value
     )
     conclusion: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[CreatedAt]
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), onupdate=text("now()")
+    )
 
 
 class BacktestRun(Base):
+    """Resultado importado del Strategy Tester de MT5. De solo inserción. Nunca se mezcla con
+    las operaciones reales: no crea filas en trades y su origen es siempre BACKTEST."""
+
     __tablename__ = "backtest_runs"
-    __table_args__ = (CheckConstraint("period_end > period_start", name="period"),)
+    __table_args__ = (
+        CheckConstraint("period_end >= period_start", name="period"),
+        CheckConstraint("source = 'BACKTEST'", name="solo_backtest"),
+    )
 
     id: Mapped[UUIDPk]
     experiment_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("experiments.id"), index=True
     )
     bot_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bot_versions.id"))
+    source: Mapped[TradeSource] = mapped_column(
+        str_enum(TradeSource), server_default=TradeSource.BACKTEST.value
+    )
+    label: Mapped[str | None] = mapped_column(String(64))
     symbol: Mapped[str] = mapped_column(String(64))
     period_start: Mapped[date] = mapped_column(Date)
     period_end: Mapped[date] = mapped_column(Date)
     model: Mapped[str] = mapped_column(String(64))  # p. ej. "Every tick based on real ticks"
     initial_deposit: Mapped[Money | None]
     report_file: Mapped[str | None] = mapped_column(String(512))
+    # CSV (export de transacciones), HTML o XML (informe del probador).
+    report_format: Mapped[str | None] = mapped_column(String(8))
+    file_sha256: Mapped[str | None] = mapped_column(String(64))
     metrics: Mapped[Json]
+    # {"operaciones": [...], "informe": {...}, "avisos": [...]}: lo leído del archivo.
+    trades: Mapped[Json]
     imported_at: Mapped[CreatedAt]
+
+
+class ExperimentResult(Base):
+    """Una revisión de los resultados de un experimento. De solo inserción: un resultado
+    nuevo (otro filtro con más datos, un backtest, una nota) es otra revisión; las anteriores
+    no se tocan."""
+
+    __tablename__ = "experiment_results"
+    __table_args__ = (
+        UniqueConstraint("experiment_id", "revision"),
+        CheckConstraint("kind IN ('FILTRO', 'BACKTEST', 'MANUAL')", name="kind"),
+        CheckConstraint("revision >= 1", name="revision"),
+    )
+
+    id: Mapped[UUIDPk]
+    experiment_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("experiments.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(16))
+    notes: Mapped[str | None] = mapped_column(Text)
+    results: Mapped[Json]
+    backtest_run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("backtest_runs.id"))
+    created_at: Mapped[CreatedAt]
 
 
 class Alert(Base):

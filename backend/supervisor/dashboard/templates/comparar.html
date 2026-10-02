@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% from "partials/lab.html" import side_by_side, traps, curves, version_form %}
+{% block title %}Comparar versiones{% endblock %}
+{% block content %}
+<p class="muted small"><a href="/dashboard/laboratorio">← Laboratorio</a></p>
+<h1>Comparar versiones</h1>
+<section class="card">
+  {{ version_form(versions, selected) }}
+  {% if error %}<p class="notice">{{ error }}</p>{% endif %}
+</section>
+{% if pair %}
+<section class="card">
+  <div class="card-head"><h2>{{ pair.a.etiqueta }} frente a {{ pair.b.etiqueta }}</h2><span class="muted small">operaciones reales cerradas</span></div>
+  {% for w in pair.avisos %}<p class="notice">{{ w }}</p>{% endfor %}
+  {% for a in arms %}{% for w in a.avisos %}<p class="notice small"><strong>{{ a.etiqueta }}:</strong> {{ w }}</p>{% endfor %}{% endfor %}
+  {{ side_by_side(tables) }}
+  {% if pair.diferencia_expectativa %}{% set d = pair.diferencia_expectativa %}
+  <p>Diferencia de expectativa (B − A): <span class="{{ d.diferencia_r | sign }}">{{ d.diferencia_r | num }} R</span> <span class="muted small">[{{ d.ic95[0] | num }}, {{ d.ic95[1] | num }}] · p = {{ d.p_valor | num(4) }} · {{ d.metodo }}</span></p>
+  {% endif %}
+  <p class="muted small">{{ pair.nota }}</p>
+  <h3>Curvas de equity</h3>
+  {{ curves(curves_url) }}
+  <h3>Trampas de cada versión</h3>
+  {{ traps(arms) }}
+</section>
+{% endif %}
+{% endblock %}

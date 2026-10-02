@@ -98,6 +98,15 @@ class Settings(BaseSettings):
     patterns_interval_seconds: int = Field(default=86400, ge=60)
     patterns_max_scopes_per_pass: int = Field(default=5, ge=1)
 
+    # Laboratorio (fase 10). Tamaño máximo de un archivo del Strategy Tester (Caddy deja pasar
+    # hasta 10 MB solo en la ruta de subida de backtests; el resto sigue en 2 MB).
+    lab_upload_max_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=10 * 1024 * 1024)
+    # Remuestreos (bootstrap con semilla fija) para los intervalos del profit factor y del
+    # drawdown máximo. 0 los desactiva.
+    lab_bootstrap_samples: int = Field(default=500, ge=0, le=5000)
+    # Puntos por curva de equity en las comparaciones.
+    lab_curve_points: int = Field(default=400, ge=10, le=5000)
+
     # Dashboard web (/dashboard). La sesión es una cookie firmada con HMAC-SHA256 con una clave
     # derivada de admin_token: rotar el token invalida todas las sesiones.
     dashboard_session_hours: float = Field(default=12, gt=0, le=24 * 30)

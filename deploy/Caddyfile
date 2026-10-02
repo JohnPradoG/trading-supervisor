@@ -1,8 +1,17 @@
 {$SUPERVISOR_DOMAIN} {
 	encode gzip
 
-	# Los lotes del EA son pequeños; esto corta abusos antes de llegar a la API.
-	request_body {
+	# Los lotes del EA son pequeños; esto corta abusos antes de llegar a la API. Solo la subida
+	# de resultados del Strategy Tester (laboratorio, con token de administración) admite hasta
+	# 10 MB: un informe HTML de MT5 va en UTF-16 y pesa el doble. La API la limita a 8 MB.
+	@subida_backtest path_regexp ^/v1/experiments/[^/]+/backtests$
+	@resto {
+		not path_regexp ^/v1/experiments/[^/]+/backtests$
+	}
+	request_body @subida_backtest {
+		max_size 10MB
+	}
+	request_body @resto {
 		max_size 2MB
 	}
 
