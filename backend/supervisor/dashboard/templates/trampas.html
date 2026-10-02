@@ -38,7 +38,7 @@ operaciones). Todo lo demás es <em>candidata, no validada</em>.</p>
     <thead><tr><th>Condición</th><th>Fuera de muestra</th><th>Entrenamiento</th><th>Forward</th></tr></thead>
     <tbody>
     {% for p in b.validated %}
-      <tr>
+      <tr id="p-{{ p.id }}">
         <td><span class="badge bad">trampa validada</span> {{ p.statement }}{% if p.origin == 'REGLA' %} <span class="muted small">(regla de la fase 6)</span>{% endif %}
           <form method="post" action="/dashboard/laboratorio/crear" class="inline-form">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "partials/macros.html" import terminals_table, direction, bot_label %}
+{% from "partials/alertas.html" import alerts_table %}
 {% block title %}Resumen{% endblock %}
 {% block content %}
 <h1>Resumen <span class="muted small">{{ now | utc('%Y-%m-%d %H:%M') }} UTC</span></h1>
@@ -27,6 +28,18 @@
     <div class="tile-value small-value">{{ backlog.last_processed_at | utc('%m-%d %H:%M:%S') }}</div>
     <div class="tile-sub">{% if backlog.last_processed_id %}#{{ backlog.last_processed_id }} {{ backlog.last_processed_type }} · {{ backlog.last_processed_status }}{% else %}ninguno{% endif %}</div>
   </div>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Trampas activas recientes</h2>
+    <a class="small" href="/dashboard/alertas?tipo=TRAMPA_ACTIVA">Ver todas las alertas</a>
+  </div>
+  {% if trap_alerts %}
+  {{ alerts_table(trap_alerts, csrf_token, '/dashboard') }}
+  {% else %}
+  <p class="muted">Ninguna operación reciente ha entrado en una trampa validada.</p>
+  {% endif %}
 </section>
 
 <section class="card">

@@ -21,6 +21,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -263,14 +264,48 @@ class ExperimentResult(Base):
 
 
 class Alert(Base):
+    """Alerta (sección 15). De solo inserción: cada disparo y cada resolución es una fila
+    nueva con la misma dedup_key. Solo cambian (trigger) las columnas de entrega por Telegram
+    y acknowledged_at, este último una sola vez. Ver supervisor.alerts.engine."""
+
     __tablename__ = "alerts"
+    __table_args__ = (
+        CheckConstraint("event IN ('DISPARO', 'RESUELTA')", name="event"),
+        CheckConstraint(
+            "delivery_status IN ('PENDING', 'SENT', 'FAILED', 'SKIPPED')", name="delivery_status"
+        ),
+        Index("ix_alerts_dedup_key_created", "dedup_key", "created_at"),
+        Index("ix_alerts_created_at", "created_at"),
+        Index(
+            "ix_alerts_delivery_pending",
+            "created_at",
+            postgresql_where=text("delivery_status = 'PENDING'"),
+        ),
+        Index(
+            "ix_alerts_unacknowledged",
+            "created_at",
+            postgresql_where=text("acknowledged_at IS NULL AND event = 'DISPARO'"),
+        ),
+    )
 
     id: Mapped[UUIDPk]
     rule: Mapped[str] = mapped_column(String(64), index=True)
     severity: Mapped[AlertSeverity] = mapped_column(str_enum(AlertSeverity))
+    # Misma condición = misma clave: no se repite mientras sigue activa.
+    dedup_key: Mapped[str] = mapped_column(String(200), server_default="")
+    # DISPARO (la condición aparece) o RESUELTA (la condición desaparece).
+    event: Mapped[str] = mapped_column(String(16), server_default="DISPARO")
     bot_version_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("bot_versions.id"))
     deployment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("deployments.id"))
+    trade_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("trades.trade_id"))
+    hypothesis_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("hypotheses.id"))
     message: Mapped[str] = mapped_column(Text)
     data: Mapped[Json]
     created_at: Mapped[CreatedAt]
     acknowledged_at: Mapped[UTCDateTime | None]
+    # Entrega por Telegram: PENDING, SENT, FAILED o SKIPPED (sin canal configurado).
+    delivery_status: Mapped[str] = mapped_column(String(16), server_default="SKIPPED")
+    delivery_attempts: Mapped[int] = mapped_column(SmallInteger, server_default="0")
+    delivery_error: Mapped[str | None] = mapped_column(Text)
+    next_delivery_at: Mapped[UTCDateTime | None]
+    sent_at: Mapped[UTCDateTime | None]

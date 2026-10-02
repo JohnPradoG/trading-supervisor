@@ -4,6 +4,8 @@ Consulta raw_events pendientes cada worker_poll_interval_seconds, los convierte 
 operaciones y cada worker_maintenance_interval_seconds hace el repaso de operaciones
 recientes. Cada patterns_interval_seconds (un día) repasa la búsqueda de patrones de las
 versiones con operaciones (solo repite la búsqueda con patterns_new_trades cerradas nuevas).
+Cada alerts_interval_seconds (y justo después de los patrones) evalúa las alertas y las
+entrega por Telegram si está configurado (supervisor.alerts.engine).
 Con SIGTERM o SIGINT termina el lote en curso y sale limpio.
 """
 
@@ -17,6 +19,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from supervisor import __version__
+from supervisor.alerts.engine import alerts_pass
 from supervisor.analytics.pattern_search import patterns_pass
 from supervisor.config import Settings, get_settings
 from supervisor.log_config import configure_logging
@@ -38,6 +41,7 @@ def run_forever(
 ) -> None:
     last_maintenance = float("-inf")
     last_patterns = float("-inf")
+    last_alerts = float("-inf")
     failures = 0
     while not stop.is_set():
         try:
@@ -51,6 +55,10 @@ def run_forever(
             if time.monotonic() - last_patterns >= settings.patterns_interval_seconds:
                 patterns_pass(session_factory, settings)
                 last_patterns = time.monotonic()
+                last_alerts = float("-inf")  # trampas recién validadas o caducadas: avisar ya
+            if time.monotonic() - last_alerts >= settings.alerts_interval_seconds:
+                last_alerts = time.monotonic()  # un fallo no se repite en cada vuelta
+                alerts_pass(session_factory, settings)
             failures = 0
         except TRANSIENT_ERRORS:
             failures += 1

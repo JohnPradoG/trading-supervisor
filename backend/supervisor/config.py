@@ -107,6 +107,45 @@ class Settings(BaseSettings):
     # Puntos por curva de equity en las comparaciones.
     lab_curve_points: int = Field(default=400, ge=10, le=5000)
 
+    # Alertas (sección 15). Las alertas informan: nada envía órdenes ni controla los bots.
+    alerts_enabled: bool = True
+    # Cada cuánto el worker evalúa las alertas (y después de cada repaso de patrones).
+    alerts_interval_seconds: int = Field(default=20, ge=5)
+    # Tras resolverse, la misma alerta (misma clave) no vuelve a dispararse antes de esto.
+    alerts_cooldown_minutes: int = Field(default=60, ge=0)
+    # TRAMPA_ACTIVA: operaciones abiertas en los últimos N minutos (no las importadas).
+    alerts_trap_window_minutes: int = Field(default=60, ge=1, le=1440)
+    # PATRON_VALIDADO / PATRON_CADUCADO: hipótesis que cambiaron en los últimos N días (al
+    # arrancar no se avisa de todo el histórico).
+    alerts_pattern_lookback_days: int = Field(default=7, ge=1)
+    # EA_SIN_LATIDO: minutos sin latido de un terminal (solo con el mercado abierto).
+    alerts_heartbeat_minutes: int = Field(default=5, ge=1)
+    # Fin de semana del mercado (UTC): de viernes a esta hora hasta domingo a esta hora no se
+    # avisa de falta de latido.
+    alerts_skip_weekends: bool = True
+    alerts_weekend_start_hour_utc: int = Field(default=21, ge=0, le=23)
+    alerts_weekend_end_hour_utc: int = Field(default=21, ge=0, le=23)
+
+    # Telegram (opcional). Sin token o sin chat_id el canal queda desactivado y las alertas
+    # solo se ven en el dashboard. Ver `supervisor-cli telegram setup-help`.
+    telegram_bot_token: SecretStr | None = None
+    telegram_chat_id: str | None = None
+    telegram_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    # Intentos por alerta antes de marcarla FAILED; el primer reintento a los N segundos y
+    # después el doble cada vez.
+    telegram_max_attempts: int = Field(default=5, ge=1, le=20)
+    telegram_retry_base_seconds: int = Field(default=30, ge=1)
+    # Mensajes por pasada y separación entre ellos (Telegram admite ~1 mensaje/s por chat).
+    telegram_batch_size: int = Field(default=10, ge=1, le=100)
+    telegram_min_interval_seconds: float = Field(default=1.1, ge=0)
+    # URL pública del dashboard para los enlaces (en Docker: https://SUPERVISOR_DOMAIN).
+    public_url: str | None = None
+
+    @property
+    def telegram_enabled(self) -> bool:
+        token = self.telegram_bot_token.get_secret_value() if self.telegram_bot_token else ""
+        return bool(token.strip() and (self.telegram_chat_id or "").strip())
+
     # Dashboard web (/dashboard). La sesión es una cookie firmada con HMAC-SHA256 con una clave
     # derivada de admin_token: rotar el token invalida todas las sesiones.
     dashboard_session_hours: float = Field(default=12, gt=0, le=24 * 30)

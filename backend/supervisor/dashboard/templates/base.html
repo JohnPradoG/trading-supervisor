@@ -20,6 +20,7 @@
   <nav class="nav">
     <a href="/dashboard" {% if nav == 'resumen' %}aria-current="page"{% endif %}>Resumen</a>
     <a href="/dashboard/trampas" {% if nav == 'trampas' %}aria-current="page"{% endif %}>Trampas</a>
+    <a href="/dashboard/alertas" {% if nav == 'alertas' %}aria-current="page"{% endif %}>Alertas{% if alerts_badge %} <span class="badge bad nav-badge" title="alertas sin reconocer">{{ alerts_badge }}</span>{% endif %}</a>
     <a href="/dashboard/operaciones" {% if nav == 'operaciones' %}aria-current="page"{% endif %}>Operaciones</a>
     <a href="/dashboard/laboratorio" {% if nav == 'laboratorio' %}aria-current="page"{% endif %}>Laboratorio</a>
     <a href="/dashboard/bots" {% if nav == 'bots' %}aria-current="page"{% endif %}>Bots</a>
