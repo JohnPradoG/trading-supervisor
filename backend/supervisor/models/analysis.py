@@ -10,9 +10,11 @@ Reglas:
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -23,6 +25,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from supervisor.models.base import (
@@ -132,6 +135,12 @@ class TradeDna(Base):
 
 
 class TradeAnalysis(Base):
+    """Análisis post-operación (fase 6). De solo inserción: re-analizar crea una versión nueva
+    (analysis_version + 1) y la vigente es siempre la de mayor versión.
+
+    input_hash resume todo lo que se usó (operación, eventos, velas, configuración y versión
+    del analizador): si no cambia, no se crea versión nueva."""
+
     __tablename__ = "trade_analyses"
     __table_args__ = (UniqueConstraint("trade_id", "analysis_version"),)
 
@@ -139,20 +148,51 @@ class TradeAnalysis(Base):
     trade_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("trades.trade_id"), index=True)
     analysis_version: Mapped[int] = mapped_column(SmallInteger)
     outcome: Mapped[Outcome] = mapped_column(str_enum(Outcome))
+    analyzer_version: Mapped[str] = mapped_column(String(16))
+    ruleset_version: Mapped[int] = mapped_column(SmallInteger)
+    input_hash: Mapped[str] = mapped_column(String(64))
+    # Datos de entrada resumidos (para auditar y para decidir si hay que re-analizar).
+    inputs: Mapped[Json]
+    # Lo que no se pudo analizar y por qué: [{"code": ..., "text": ...}].
+    data_quality: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, server_default="[]")
     created_at: Mapped[CreatedAt]
 
-    findings: Mapped[list["AnalysisFinding"]] = relationship(back_populates="analysis")
+    findings: Mapped[list["AnalysisFinding"]] = relationship(
+        back_populates="analysis", order_by="AnalysisFinding.position"
+    )
 
 
 class AnalysisFinding(Base):
+    """Un hallazgo del análisis.
+
+    - FACT: dato medido, con sus valores en `evidence`. Sin confianza ni soportes.
+    - HYPOTHESIS: explicación posible generada por una regla versionada (`code` +
+      `rule_version`), apoyada en los FACT de `supported_by` y con `confidence` "no_validada"
+      hasta que la fase 9 la valide estadísticamente.
+    La base de datos impide mezclar ambas cosas (CHECK fact_vs_hypothesis)."""
+
     __tablename__ = "analysis_findings"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "code"),
+        CheckConstraint(
+            "(kind = 'FACT' AND confidence IS NULL AND rule_version IS NULL"
+            " AND supported_by = '[]'::jsonb)"
+            " OR (kind = 'HYPOTHESIS' AND confidence IS NOT NULL AND rule_version IS NOT NULL"
+            " AND jsonb_typeof(supported_by) = 'array' AND jsonb_array_length(supported_by) > 0)",
+            name="fact_vs_hypothesis",
+        ),
+    )
 
     id: Mapped[UUIDPk]
     analysis_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("trade_analyses.id"), index=True)
+    position: Mapped[int] = mapped_column(SmallInteger, server_default="0")
     kind: Mapped[FindingKind] = mapped_column(str_enum(FindingKind))
     code: Mapped[str] = mapped_column(String(64))
     text: Mapped[str] = mapped_column(Text)
     evidence: Mapped[Json]
+    confidence: Mapped[str | None] = mapped_column(String(16))
+    rule_version: Mapped[int | None] = mapped_column(SmallInteger)
+    supported_by: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, server_default="[]")
     hypothesis_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("hypotheses.id"))
     created_at: Mapped[CreatedAt]
 

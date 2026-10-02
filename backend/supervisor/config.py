@@ -45,6 +45,26 @@ class Settings(BaseSettings):
     # Reentrada: apertura en la misma cuenta, símbolo y magic tras un cierre por SL.
     reentry_window_minutes: int = Field(default=30, ge=0)
 
+    # Análisis y estadísticas (fase 6).
+    # Breakeven: |neto| <= esta fracción del riesgo inicial (sin riesgo: |neto| <= |comisión|).
+    breakeven_r_fraction: float = Field(default=0.05, ge=0, le=1)
+    # Muestra mínima para Sharpe/Sortino y para no avisar de muestra pequeña.
+    stats_min_sample: int = Field(default=30, ge=2)
+    # Máximo de operaciones cerradas que carga una consulta de estadísticas; si el filtro
+    # abarca más se rechaza pidiendo acotarlo (protege la RAM del VPS).
+    stats_max_trades: int = Field(default=50000, ge=100)
+    # EMAs de M15/H1 agregadas desde M1: se exigen warmup_factor x periodo velas cerradas.
+    analysis_ema_warmup_factor: float = Field(default=2.0, ge=1)
+    # Cobertura mínima de velas M1 dentro de las velas agregadas usadas (0-1).
+    analysis_min_bar_coverage: float = Field(default=0.8, gt=0, le=1)
+    # Percentil de volatilidad: ATR(14) H1 al entrar frente a los N días anteriores.
+    analysis_volatility_lookback_days: int = Field(default=20, ge=2)
+    analysis_volatility_min_samples: int = Field(default=100, ge=10)
+    # Noticias: ventana alrededor de la entrada (minutos) cuando haya fuente de calendario.
+    analysis_news_window_minutes: int = Field(default=60, ge=1)
+    # Operaciones re-analizadas como máximo en cada repaso del worker.
+    analysis_max_per_pass: int = Field(default=200, ge=1)
+
 
 @lru_cache
 def get_settings() -> Settings:
