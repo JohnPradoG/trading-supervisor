@@ -9,6 +9,8 @@
     ts list-terminals
     ts trade-summary
     ts reprocess [--terminal exness-win-01]
+    ts analyze --trade <trade_id> | --all-closed
+    ts stats [--bot EA_Nasdaq_FVG_Retest] [--group-by version,session] [--from 2026-10-01]
 
 Las cuentas y las API keys se crean aquí y no por HTTP: así una API key comprometida o un
 token de administración filtrado no permiten fabricar credenciales nuevas.
@@ -16,14 +18,21 @@ token de administración filtrado no permiten fabricar credenciales nuevas.
 
 import argparse
 import sys
+import uuid
+from collections import Counter
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select, update
 
+from supervisor.analytics.analyzer import analyze_by_id, closed_trade_ids
+from supervisor.config import get_settings
 from supervisor.db import session_scope
-from supervisor.models import Account, ApiClient, Broker, RawEvent, Terminal
-from supervisor.models.enums import AccountType, MarginMode, RawEventStatus
+from supervisor.models import Account, ApiClient, Bot, Broker, RawEvent, Terminal
+from supervisor.models.enums import AccountType, MarginMode, RawEventStatus, TradeSource
 from supervisor.security.api_keys import generate_api_key
+from supervisor.services import stats as stats_service
+from supervisor.services.errors import ServiceError
 from supervisor.services.trades import summary
 
 
@@ -158,6 +167,174 @@ def trade_summary(_: argparse.Namespace) -> None:
             )
 
 
+def _uuid(value: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"no es un UUID: {value}") from exc
+
+
+def _date(value: str) -> datetime:
+    """Fecha u hora ISO; sin zona se interpreta como UTC."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"fecha no válida: {value}") from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+ANALYZE_PAGE = 200
+
+
+def analyze(args: argparse.Namespace) -> None:
+    """Re-analiza operaciones cerradas. Solo crea versión nueva si cambiaron sus entradas o la
+    versión del analizador: repetirlo no duplica nada."""
+    settings = get_settings()
+    if args.trade:
+        with session_scope() as session:
+            try:
+                result = analyze_by_id(session, args.trade, settings)
+            except LookupError as exc:
+                sys.exit(str(exc))
+            if result.status == "no_cerrada":
+                sys.exit("La operación sigue abierta: se analiza al cerrarse.")
+            a = result.analysis
+            facts = sum(1 for f in a.findings if f.kind.value == "FACT")
+            hyps = len(a.findings) - facts
+            verb = "creada" if result.status == "creado" else "sin cambios, vigente"
+            print(
+                f"Análisis v{a.analysis_version} {verb}: {a.outcome.value}, {facts} hechos, "
+                f"{hyps} hipótesis, {len(a.data_quality)} notas de calidad"
+            )
+        return
+    totals: Counter = Counter()
+    after = None
+    while True:
+        with session_scope() as session:
+            page = closed_trade_ids(session, after, ANALYZE_PAGE)
+            for _, trade_id in page:
+                try:
+                    with session.begin_nested():
+                        totals[analyze_by_id(session, trade_id, settings).status] += 1
+                except Exception as exc:  # una operación con datos raros no para el resto
+                    totals["error"] += 1
+                    print(f"error en {trade_id}: {exc}", file=sys.stderr)
+        if len(page) < ANALYZE_PAGE:
+            break
+        after = page[-1]
+    print(
+        f"Operaciones cerradas: {sum(totals.values())}. Versiones nuevas: {totals['creado']}, "
+        f"sin cambios: {totals['sin_cambios']}, errores: {totals['error']}"
+    )
+
+
+def _pct(value: float | None) -> str:
+    return "-" if value is None else f"{value * 100:.1f}%"
+
+
+def _num(value: float | None, places: int = 2) -> str:
+    return "-" if value is None else f"{value:.{places}f}"
+
+
+def _ci(interval: dict | None, pct: bool = False) -> str:
+    if not interval:
+        return ""
+    fmt = _pct if pct else _num
+    return f" [{fmt(interval['low'])}, {fmt(interval['high'])}]"
+
+
+def _pf(m: dict[str, Any]) -> str:
+    if m["profit_factor"] is not None:
+        return _num(m["profit_factor"])
+    return "inf" if "infinito" in (m["profit_factor_note"] or "") else "-"
+
+
+def _streaks(m: dict[str, Any]) -> str:
+    if m["max_consecutive_wins"] is None:
+        return "-"
+    return f"{m['max_consecutive_wins']}/{m['max_consecutive_losses']}"
+
+
+STATS_HEADER = (
+    "Grupo",
+    "n",
+    "Win% [IC95]",
+    "PF",
+    "Expect.",
+    "Exp. R [IC95]",
+    "Max DD",
+    "Rachas G/P",
+    "Sharpe",
+    "Aviso",
+)
+
+
+def stats_table(rows: list[tuple[str, dict[str, Any]]]) -> str:
+    """Tabla legible de métricas (una fila por grupo)."""
+    header = STATS_HEADER
+    lines = [header]
+    for label, m in rows:
+        lines.append(
+            (
+                label,
+                str(m["n_trades"]),
+                _pct(m["win_rate"]) + _ci(m["win_rate_ci95"], pct=True),
+                _pf(m),
+                _num(m["expectancy"]),
+                _num(m["expectancy_r"]) + _ci(m["expectancy_r_ci95"]),
+                _num(m["max_drawdown"]),
+                _streaks(m),
+                _num(m["sharpe"]),
+                "muestra pequeña" if m["sample_warning"] else "",
+            )
+        )
+    widths = [max(len(row[i]) for row in lines) for i in range(len(header))]
+    out = []
+    for n, row in enumerate(lines):
+        out.append("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+        if n == 0:
+            out.append("  ".join("-" * w for w in widths))
+    return "\n".join(out)
+
+
+def stats(args: argparse.Namespace) -> None:
+    settings = get_settings()
+    with session_scope() as session:
+        bot_id = None
+        if args.bot:
+            try:
+                bot_id = uuid.UUID(args.bot)
+            except ValueError:
+                bot = session.scalar(select(Bot).where(Bot.name == args.bot))
+                if bot is None:
+                    sys.exit(f"No existe el bot '{args.bot}'.")
+                bot_id = bot.bot_id
+        filters = stats_service.StatsFilters(
+            bot_id=bot_id,
+            version_id=args.version_id,
+            symbol=args.symbol,
+            account_id=args.account_id,
+            source=TradeSource(args.source) if args.source else None,
+            date_from=args.date_from,
+            date_to=args.date_to,
+        )
+        try:
+            dims = stats_service.parse_group_by(args.group_by)
+            result = stats_service.stats(session, settings, filters, dims)
+        except ServiceError as exc:
+            sys.exit(exc.message)
+    rows = [("TOTAL (con bot)", result["total"])]
+    rows += [(g["label"], g["metrics"]) for g in result["groups"]]
+    if result["unassigned"] is not None and result["unassigned"]["n_trades"]:
+        rows.append(("SIN ASIGNAR (aparte)", result["unassigned"]))
+    print(stats_table(rows))
+    print(
+        f"\nSolo operaciones cerradas; fechas por hora de cierre. Breakeven: |neto| <= "
+        f"{settings.breakeven_r_fraction} R. Sharpe por operación (base R) solo con n >= "
+        f"{settings.stats_min_sample}. IC95: Wilson (win rate) y t de Student (expectancy)."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="supervisor-cli", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -196,6 +373,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("trade-summary", help="operaciones abiertas/cerradas y estado del worker")
     p.set_defaults(func=trade_summary)
+
+    p = sub.add_parser("analyze", help="re-analizar operaciones cerradas (versiones nuevas)")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--trade", type=_uuid, help="trade_id de una operación")
+    target.add_argument("--all-closed", action="store_true", help="todas las cerradas")
+    p.set_defaults(func=analyze)
+
+    p = sub.add_parser("stats", help="estadísticas de operaciones cerradas")
+    p.add_argument("--bot", help="nombre o bot_id")
+    p.add_argument("--version-id", type=_uuid)
+    p.add_argument("--symbol")
+    p.add_argument("--account-id", type=_uuid)
+    p.add_argument("--source", choices=[s.value for s in TradeSource])
+    p.add_argument("--from", dest="date_from", type=_date, help="hora de cierre desde (UTC)")
+    p.add_argument("--to", dest="date_to", type=_date, help="hora de cierre hasta (UTC)")
+    p.add_argument(
+        "--group-by",
+        help="hasta 2 de: " + ", ".join(stats_service.GROUP_DIMENSIONS),
+    )
+    p.set_defaults(func=stats)
     return parser
 
 

@@ -28,6 +28,7 @@ from sqlalchemy import and_, or_, select, true, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from supervisor.analytics.analyzer import analyze_safely
 from supervisor.config import Settings
 from supervisor.models import AccountSnapshot, Deployment, RawEvent, Terminal, Trade, TradeEvent
 from supervisor.models.enums import (
@@ -425,6 +426,9 @@ def recompute(session: Session, trade: Trade, acc: AccountInfo, settings: Settin
             compute_excursion(session, trade, acc.broker_id)
         if not was_closed:
             _link_followers(session, trade, settings)
+        # Análisis post-operación (fase 6). Solo crea versión nueva si cambiaron sus entradas;
+        # si falla no afecta al registro de la operación y el repaso lo reintenta.
+        analyze_safely(session, trade, settings)
 
 
 def _ensure_closed_event(session: Session, trade: Trade, out_volume: Decimal) -> None:

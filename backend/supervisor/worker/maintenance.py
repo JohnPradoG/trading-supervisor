@@ -4,6 +4,8 @@
 - Operaciones sin despliegue: si después se registró el despliegue que cubría la entrada, se
   asignan su bot y versión.
 - Riesgo sin balance: si llegó después la foto de cuenta, se completa risk_percent.
+- Análisis post-operación: crea versiones nuevas cuando cambian sus entradas (ver
+  supervisor.analytics.analyzer.reanalyze_recent). Va al final para ver los cambios anteriores.
 """
 
 import logging
@@ -13,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from supervisor.analytics.analyzer import reanalyze_recent
 from supervisor.config import Settings
 from supervisor.models import Account, Trade, TradeEvent
 from supervisor.models.enums import TradeEventType, TradeStatus
@@ -97,6 +100,11 @@ def run_maintenance(session: Session, settings: Settings, now: datetime | None =
 
     _each(session, list(no_balance), risk, stats, "riesgos")
     session.flush()
+
+    analysis = reanalyze_recent(session, settings, now)
+    stats["analisis"] = analysis["creado"]
+    if analysis["error"]:
+        stats["analisis_fallidos"] = analysis["error"]
     if any(stats.values()):
         log.info("repaso de operaciones", extra=dict(stats))
     return stats

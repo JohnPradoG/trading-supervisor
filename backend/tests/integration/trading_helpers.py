@@ -1,12 +1,13 @@
 """Ayudas para las pruebas del worker: eventos con la forma exacta que envía el EA, envío por
 la API real de ingesta y lectura de las operaciones resultantes."""
 
+import math
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
 from supervisor.models import RawEvent, Terminal, Trade, TradeEvent
@@ -261,3 +262,59 @@ def raw_events(engine: Engine, terminal: dict) -> list[RawEvent]:
 
 def D(value: str) -> Decimal:
     return Decimal(value)
+
+
+# Historia de velas M1 para el análisis (EMAs de M15/H1 y ATR H1) -------------------------------
+
+HISTORY_SLOPE = 0.01  # tendencia alcista: +0.01 por minuto (+0.6 por hora)
+
+
+def history_price(t: datetime, start: datetime, base: float = 20000.0) -> float:
+    """Precio de cierre de la vela M1 de `t` en la historia sintética: tendencia lineal más
+    una onda de 5 puntos con periodo de unas 6 horas."""
+    minutes = (t - start).total_seconds() / 60
+    return base + HISTORY_SLOPE * minutes + 5 * math.sin(t.timestamp() / 3600.0)
+
+
+def insert_m1_history(
+    engine: Engine,
+    broker_id: uuid.UUID,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    *,
+    base: float = 20000.0,
+    spike_from: datetime | None = None,
+) -> int:
+    """Inserta en SQL (rápido) una vela M1 por minuto entre start y end, ambos incluidos.
+    Rango normal ±3; desde `spike_from`, ±40 (volatilidad alta) sin cambiar los cierres."""
+    sql = text(
+        """
+        INSERT INTO price_bars (broker_id, symbol, timeframe, bar_time, open, high, low, close,
+                                tick_volume, spread)
+        SELECT :broker_id, :symbol, 'M1', t, p, p + r, p - r, p, 10, 100
+        FROM (
+            SELECT t,
+                   (CAST(:base AS float8)
+                    + CAST(:slope AS float8) * extract(epoch FROM t - CAST(:start AS timestamptz))::float8 / 60
+                    + 5 * sin(extract(epoch FROM t)::float8 / 3600.0))::numeric(24, 10) AS p,
+                   CASE WHEN t >= CAST(:spike AS timestamptz) THEN 40 ELSE 3 END AS r
+            FROM generate_series(CAST(:start AS timestamptz), CAST(:end AS timestamptz),
+                                 interval '1 minute') AS t
+        ) AS x
+        """
+    )
+    with engine.begin() as conn:
+        result = conn.execute(
+            sql,
+            {
+                "broker_id": broker_id,
+                "symbol": symbol,
+                "start": start,
+                "end": end,
+                "base": base,
+                "slope": HISTORY_SLOPE,
+                "spike": spike_from,
+            },
+        )
+    return result.rowcount
