@@ -12,6 +12,7 @@
     ts analyze --trade <trade_id> | --all-closed
     ts dna --trade <trade_id> | --all
     ts stats [--bot EA_Nasdaq_FVG_Retest] [--group-by version,session] [--from 2026-10-01]
+    ts patterns --version <bot_version_id> [--symbol USTEC_x100] [--report-only]
 
 Las cuentas y las API keys se crean aquí y no por HTTP: así una API key comprometida o un
 token de administración filtrado no permiten fabricar credenciales nuevas.
@@ -26,14 +27,16 @@ from typing import Any
 
 from sqlalchemy import select, update
 
+from supervisor.analytics import pattern_search
 from supervisor.analytics.analyzer import analyze_by_id, closed_trade_ids
 from supervisor.analytics.dna import dna_by_id, trade_ids_page
 from supervisor.config import get_settings
 from supervisor.db import session_scope
-from supervisor.models import Account, ApiClient, Bot, Broker, RawEvent, Terminal
+from supervisor.models import Account, ApiClient, Bot, BotVersion, Broker, RawEvent, Terminal
 from supervisor.models.enums import AccountType, MarginMode, RawEventStatus, TradeSource
 from supervisor.security.api_keys import generate_api_key
 from supervisor.services import dna as dna_service
+from supervisor.services import patterns as patterns_service
 from supervisor.services import stats as stats_service
 from supervisor.services.errors import ServiceError
 from supervisor.services.trades import summary
@@ -401,6 +404,112 @@ def stats(args: argparse.Namespace) -> None:
     )
 
 
+def _segment_line(name: str, seg: dict[str, Any] | None) -> str:
+    if not seg:
+        return f"    {name}: -"
+    ci = seg.get("expectancy_r_ic95")
+    ci_text = f" [{_num(ci[0])}, {_num(ci[1])}]" if ci else ""
+    wr_ci = seg.get("win_rate_ic95")
+    wr_text = f" [{_pct(wr_ci[0])}, {_pct(wr_ci[1])}]" if wr_ci else ""
+    pf = seg.get("profit_factor_r")
+    line = (
+        f"    {name}: n={seg['n']}  win rate {_pct(seg.get('win_rate'))}{wr_text}  "
+        f"expectativa {_num(seg.get('expectancy_r'))} R{ci_text}  PF {_num(pf)}"
+    )
+    if seg.get("p_ajustado") is not None:
+        line += f"  p ajustado {seg['p_ajustado']:.4f} ({seg.get('pruebas_en_familia')} pruebas)"
+    if seg.get("motivo") and name != "entrenamiento":
+        line += f"\n      {seg['motivo']}"
+    return line
+
+
+def _print_pattern(item: dict[str, Any]) -> None:
+    print(f"  [{item['label'].upper()}] {item['statement']}")
+    if item.get("status_note"):
+        print(f"    estado: {item['status_note']}")
+    print(_segment_line("entrenamiento", item.get("entrenamiento")))
+    print(_segment_line("validación", item.get("validacion")))
+    print(_segment_line("fuera de muestra", item.get("fuera_de_muestra")))
+    if item.get("forward"):
+        print(_segment_line("forward", item["forward"]))
+
+
+def print_report(report: dict[str, Any]) -> None:
+    r = report["resumen"]
+    scope = f"{report['bot_name']} {report['version']}" + (
+        f" ({report['symbol']})" if report["symbol"] else ""
+    )
+    print(f"\nInforme de {scope}")
+    if r["aviso"]:
+        print(f"  {r['aviso']}")
+    print(
+        f"  Trampas validadas: {r['trampas_validadas']}  candidatas (no validadas): "
+        f"{r['trampas_candidatas']}  ventajas validadas: {r['ventajas_validadas']}  "
+        f"rechazadas: {r['rechazadas']}  caducadas: {r['caducadas']}"
+    )
+    print(
+        f"  Candidatas probadas: {r['candidatas_probadas_ultima']} en la última búsqueda, "
+        f"{r['candidatas_probadas_total']} en total"
+    )
+    wl = report["ganadoras_vs_perdedoras"]
+    print("\nGanadoras frente a perdedoras (descriptivo, no validado)")
+    for name in ("ganadoras", "perdedoras"):
+        g = wl[name]
+        print(f"  {name}: n={g['n']}  R medio {_num(g['r_medio'])}  MAE {_num(g['mae_r_medio'])} R")
+    for d in wl["diferencias"]:
+        print(
+            f"  {d['condicion']}: {_pct(d['en_ganadoras'])} de las ganadoras, "
+            f"{_pct(d['en_perdedoras'])} de las perdedoras (n={d['n']})"
+        )
+    for title, key in (
+        ("Peores condiciones (trampas)", "peores_condiciones"),
+        ("Mejores condiciones (ventajas)", "mejores_condiciones"),
+    ):
+        print(f"\n{title}")
+        if not report[key]:
+            print("  ninguna")
+        for item in report[key]:
+            _print_pattern(item)
+    print("\nMejor combinación")
+    if report["mejor_combinacion"]:
+        _print_pattern(report["mejor_combinacion"])
+    else:
+        print("  ninguna")
+    print("\nCondiciones que aumentan el drawdown (MAE en R; descriptivo, no validado)")
+    if not report["aumentan_drawdown"]:
+        print("  ninguna")
+    for d in report["aumentan_drawdown"]:
+        tr, oos = d["entrenamiento"], d["fuera_de_muestra"]
+        oos_text = (
+            f"fuera de muestra MAE {_num(oos['mae_r'])} R frente a "
+            f"{_num(oos['mae_r_complemento'])} R (n={oos['n']})"
+            if oos
+            else "fuera de muestra: sin datos"
+        )
+        print(
+            f"  {d['condicion']}: MAE {_num(tr['mae_r'])} R frente a "
+            f"{_num(tr['mae_r_complemento'])} R en entrenamiento (n={tr['n']}); {oos_text}"
+        )
+    print(f"\n{report['nota']}")
+
+
+def patterns(args: argparse.Namespace) -> None:
+    """Ejecuta la búsqueda de patrones de una versión (idempotente: sin operaciones nuevas no
+    repite nada) y muestra el informe."""
+    settings = get_settings()
+    with session_scope() as session:
+        version = session.get(BotVersion, args.version)
+        if version is None:
+            sys.exit(f"No existe la versión {args.version}.")
+        if not args.report_only:
+            result = pattern_search.run_patterns(session, settings, version.id, args.symbol)
+            print(f"Búsqueda: {result.status}. {result.message}")
+        report = patterns_service.version_report(
+            session, settings, version.bot_id, version.id, args.symbol
+        )
+    print_report(report)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="supervisor-cli", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -465,6 +574,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="hasta 2 de: " + ", ".join(stats_service.GROUP_DIMENSIONS) + ", dna:<variable>",
     )
     p.set_defaults(func=stats)
+
+    p = sub.add_parser("patterns", help="buscar y validar trampas de una versión de bot")
+    p.add_argument("--version", required=True, type=_uuid, help="bot_version_id")
+    p.add_argument("--symbol", help="solo este símbolo (por defecto, todos juntos)")
+    p.add_argument(
+        "--report-only", action="store_true", help="solo el informe, sin ejecutar la búsqueda"
+    )
+    p.set_defaults(func=patterns)
     return parser
 
 

@@ -131,3 +131,10 @@ pre.json { background: var(--surface-2); border-radius: 6px; padding: 0.6rem; ov
 .dna-section h3 { margin-top: 0.6rem; }
 .dna-table th { width: 55%; font-weight: normal; color: var(--text-2); white-space: normal; font-size: 0.85rem; }
 .dna-table td { font-size: 0.85rem; overflow-wrap: anywhere; }
+
+/* Trampas (fase 9) */
+a.tile-link { color: inherit; display: block; }
+a.tile-link:hover { border-color: var(--accent); }
+.notice { border: 1px solid var(--warn); border-radius: 6px; padding: 0.5rem 0.7rem; margin: 0.5rem 0; }
+.trap-scope { color: var(--text-2); font-size: 0.85rem; }
+.trap-table td:first-child { min-width: 16rem; }

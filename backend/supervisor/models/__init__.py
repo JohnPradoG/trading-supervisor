@@ -16,6 +16,7 @@ from supervisor.models.research import (
     DataSplit,
     Experiment,
     Hypothesis,
+    PatternRun,
     PatternTest,
 )
 from supervisor.models.trading import (
@@ -50,6 +51,7 @@ __all__ = [
     "NewsEvent",
     "Hypothesis",
     "DataSplit",
+    "PatternRun",
     "PatternTest",
     "Experiment",
     "BacktestRun",

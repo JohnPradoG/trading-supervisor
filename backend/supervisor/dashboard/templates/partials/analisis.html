@@ -19,7 +19,7 @@
       <div>
         <h3>Hipótesis <span class="muted small">(no son conclusiones: se validan estadísticamente aparte)</span></h3>
         <ul class="findings">
-        {% for f in analysis.hypotheses %}<li><span class="badge warn">HIPÓTESIS</span> {{ f.text }}{% if f.confidence %} <span class="muted small">· confianza {{ f.confidence }}</span>{% endif %}</li>{% else %}<li class="muted">Sin hipótesis.</li>{% endfor %}
+        {% for f in analysis.hypotheses %}<li><span class="badge warn">HIPÓTESIS</span> {{ f.text }}{% if f.confidence %} <span class="muted small">· confianza {{ f.confidence }}</span>{% endif %}{% if f.validation %} <span class="badge {{ 'bad' if f.validation.estado == 'VALIDATED' else 'muted-badge' }}" title="{{ f.validation.nota or '' }}">{{ f.validation.etiqueta }}</span>{% endif %}</li>{% else %}<li class="muted">Sin hipótesis.</li>{% endfor %}
         </ul>
       </div>
     </div>

@@ -331,8 +331,7 @@ FEATURES: tuple[FeatureSpec, ...] = (
         "estructura",
         "categorical",
         "Última ruptura (20 velas)",
-        "BOS_ALCISTA, BOS_BAJISTA, CHOCH_ALCISTA, CHOCH_BAJISTA o NINGUNA en las últimas 20 "
-        "velas.",
+        "BOS_ALCISTA, BOS_BAJISTA, CHOCH_ALCISTA, CHOCH_BAJISTA o NINGUNA en las últimas 20 velas.",
         searchable=False,
     ),
     FeatureSpec(

@@ -26,6 +26,9 @@ class FindingOut(_Out):
     confidence: str | None
     rule_version: int | None
     supported_by: list[str]
+    # Solo hipótesis: estado de la regla en la fase 9 para el bot de la operación (consulta;
+    # el hallazgo no se modifica). etiqueta = "trampa validada", "candidata, no validada"...
+    validation: dict[str, Any] | None = None
 
 
 class DataQualityNote(BaseModel):

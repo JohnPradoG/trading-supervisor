@@ -217,6 +217,9 @@ def test_winning_trade_analysis_from_real_bars(
     assert hyp["code"] == "H_A_FAVOR_TENDENCIA_H1" and hyp["kind"] == "HYPOTHESIS"
     assert hyp["confidence"] == "no_validada" and hyp["rule_version"] == 1
     assert hyp["supported_by"] == ["PRECIO_VS_EMA200_H1"]
+    # Fase 9: el estado de la regla se consulta aparte (el hallazgo no cambia).
+    assert hyp["validation"]["etiqueta"] == "sin contrastar"
+    assert all(f["validation"] is None for f in a["facts"])
     assert hyp["text"].startswith("Operar a favor") and "pudo haber" in hyp["text"]
 
 

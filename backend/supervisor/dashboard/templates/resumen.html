@@ -5,6 +5,11 @@
 <h1>Resumen <span class="muted small">{{ now | utc('%Y-%m-%d %H:%M') }} UTC</span></h1>
 
 <section class="tiles">
+  <a class="tile tile-link" href="/dashboard/trampas">
+    <div class="tile-label">Trampas activas</div>
+    <div class="tile-value {{ 'neg' if active_traps else '' }}">{{ active_traps }}</div>
+    <div class="tile-sub">validadas fuera de muestra</div>
+  </a>
   {% for label, s in [('Hoy (UTC)', summary_today), ('Últimos 7 días', summary_7d)] %}
   <div class="tile">
     <div class="tile-label">Cerradas · {{ label }}</div>

@@ -71,6 +71,30 @@ class Settings(BaseSettings):
     # Operaciones cuyo DNA se recalcula como máximo en cada repaso del worker.
     dna_max_per_pass: int = Field(default=100, ge=1)
 
+    # Detección de patrones y trampas (fase 9). Splits cronológicos por hora de cierre:
+    # entrenamiento / validación / fuera de muestra (el resto). Nunca se barajan.
+    patterns_train_fraction: float = Field(default=0.6, gt=0.2, lt=0.9)
+    patterns_validation_fraction: float = Field(default=0.2, gt=0.05, lt=0.5)
+    # Operaciones cerradas con riesgo conocido necesarias para crear el primer split.
+    patterns_min_trades: int = Field(default=100, ge=20)
+    # Muestra mínima de la condición (y del complemento en entrenamiento) en cada tramo.
+    patterns_min_n_train: int = Field(default=30, ge=5)
+    patterns_min_n_validation: int = Field(default=15, ge=3)
+    patterns_min_n_oos: int = Field(default=15, ge=3)
+    patterns_min_n_forward: int = Field(default=20, ge=3)
+    # FDR de Benjamini-Hochberg sobre todas las candidatas probadas en una ejecución.
+    patterns_fdr_q: float = Field(default=0.05, gt=0, lt=0.5)
+    # Tramos de cuantiles (calculados solo con entrenamiento) para variables numéricas.
+    patterns_quantile_bins: int = Field(default=4, ge=2, le=10)
+    # Tope de pares de condiciones (AND) por ejecución (CPU del VPS).
+    patterns_max_pairs: int = Field(default=3000, ge=0)
+    # Operaciones cerradas nuevas (después del último split) para repetir la búsqueda.
+    patterns_new_trades: int = Field(default=20, ge=1)
+    # Cada cuánto el worker repasa los patrones (por defecto, una vez al día) y cuántas
+    # versiones de bot como mucho en cada pasada.
+    patterns_interval_seconds: int = Field(default=86400, ge=60)
+    patterns_max_scopes_per_pass: int = Field(default=5, ge=1)
+
     # Dashboard web (/dashboard). La sesión es una cookie firmada con HMAC-SHA256 con una clave
     # derivada de admin_token: rotar el token invalida todas las sesiones.
     dashboard_session_hours: float = Field(default=12, gt=0, le=24 * 30)

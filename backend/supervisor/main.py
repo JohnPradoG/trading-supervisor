@@ -11,7 +11,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from supervisor import __version__, dashboard
-from supervisor.api import admin, analysis, ingest, trades
+from supervisor.api import admin, analysis, ingest, patterns, trades
 from supervisor.config import Settings, get_settings
 from supervisor.log_config import configure_logging, request_id_var
 from supervisor.services.errors import ServiceError
@@ -93,5 +93,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin.router)
     app.include_router(trades.router)
     app.include_router(analysis.router)
+    app.include_router(patterns.router)
     dashboard.install(app)
     return app

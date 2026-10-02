@@ -10,14 +10,15 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | Fase | Estado |
 | --- | --- |
 | 1 · Arquitectura | Aprobada |
-| 2 · Base de datos | Hecha: 25 tablas, migraciones Alembic, reglas de inmutabilidad, backups |
+| 2 · Base de datos | Hecha: 25 tablas (26 con `pattern_runs` de la fase 9), migraciones Alembic, reglas de inmutabilidad, backups |
 | 3 · API | Hecha: ingesta idempotente, API keys por terminal, registro de bots, HTTPS con Caddy |
 | 4 · Bridge MT5 (EA Monitor) | Hecha: EA de solo lectura con cola en disco, ver [mt5/README.md](mt5/README.md) |
 | 5 · Registro de operaciones | Hecha: worker que convierte deals, SL/TP y fotos de posiciones en operaciones con riesgo, motivo de salida, MFE/MAE y reentradas |
 | 6 · Análisis | **Hecha**: análisis post-operación versionado (hechos medidos separados de hipótesis no validadas) y estadísticas con intervalos de confianza y avisos de muestra pequeña |
 | 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`. Pendiente: patrones, experimentos y alertas (llegan con sus fases) |
 | 8 · Trading DNA | **Hecha**: condiciones de mercado al entrar (tendencia por timeframe, indicadores, estructura, liquidez, FVG, order blocks, volatilidad, tiempo; noticias NULL hasta tener calendario), versionadas y sin lookahead, ver [docs/trading-dna.md](docs/trading-dna.md) |
-| 9 · Detección de patrones | Siguiente |
+| 9 · Detección de patrones | **Hecha**: búsqueda de trampas (condiciones de entrada con expectativa negativa) y ventajas sobre el DNA y los hechos de la fase 6, con split cronológico congelado, FDR, validación y fuera de muestra evaluado una sola vez; página "Trampas" del dashboard e informe por versión, ver [Cómo se valida una trampa](#cómo-se-valida-una-trampa) |
+| 10 · Laboratorio | Siguiente |
 
 ## Estructura
 
@@ -31,11 +32,12 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
                      (indicadores, estructura) y métricas
   supervisor/dashboard/ dashboard web: rutas, sesión/CSRF, plantillas Jinja2, htmx y Chart.js
   supervisor/cli.py  alta de cuentas, terminales y API keys; reprocess; trade-summary;
-                     analyze; dna; stats
+                     analyze; dna; stats; patterns
   migrations/        0001 esquema inicial · 0002 reglas de inmutabilidad (triggers)
                      0003 columnas del worker (event_time, reintentos, estado vivo)
                      0004 análisis versionado (hash de entradas, FACT/HYPOTHESIS)
                      0005 Trading DNA versionado y catálogo de variables con tipos
+                     0006 patrones: hipótesis con estado, pattern_runs, pruebas OOS únicas
   tests/             pruebas contra PostgreSQL real
 docs/                trading-dna.md (definición de cada variable del DNA), guía del VPS
 deploy/              Dockerfile, docker-compose.yml, Caddyfile, .env.example
@@ -50,8 +52,8 @@ mt5/                 EA Monitor de solo lectura (SupervisorMonitor.mq5) y su gu�
   por MT5 se descarta con `ON CONFLICT DO NOTHING`. `trades(account_id, position_id)` y
   `trade_events(trade_id, deal_ticket)` son únicos como segunda barrera.
 - **Historia inmutable:** `bot_versions`, `trade_events`, `trade_analyses`,
-  `analysis_findings`, `trade_dna`, `feature_definitions`, `pattern_tests` y `data_splits` no
-  admiten UPDATE ni DELETE.
+  `analysis_findings`, `trade_dna`, `feature_definitions`, `pattern_tests`, `pattern_runs` y
+  `data_splits` no admiten UPDATE ni DELETE.
   `bots`, `deployments`, `trades`, `accounts` y `raw_events` no se pueden borrar. De
   `raw_events` solo cambian `status`, `attempts`, `processed_at`, `error` y
   `next_attempt_at`.
@@ -61,6 +63,8 @@ mt5/                 EA Monitor de solo lectura (SupervisorMonitor.mq5) y su gu�
   cuenta y símbolo.
 - **Validaciones:** versión semver, enums cerrados, operación cerrada con hora de cierre, velas
   con high ≥ low, cortes de validación en orden temporal.
+- **Fuera de muestra una sola vez:** un índice único en `pattern_tests` impide una segunda
+  prueba TRAIN, VALIDATION u OOS de la misma hipótesis.
 - **Sin lookahead en el DNA:** un CHECK impide guardar un DNA cuya última vela M1 termine
   después de la entrada.
 - **UTC:** todas las fechas son `timestamptz` y las conexiones trabajan en UTC.
@@ -112,6 +116,8 @@ ts dna --all                                    # recalcular todos (solo crea ve
 ts stats --bot EA_Nasdaq_FVG_Retest --group-by version   # tabla de métricas
 ts stats --symbol USTEC_x100 --from 2026-10-01 --group-by session,direction
 ts stats --bot EA_Nasdaq_FVG_Retest --group-by dna:tendencia_h1_rel   # por una variable del DNA
+ts patterns --version <bot_version_id>          # buscar/validar trampas e imprimir el informe
+ts patterns --version <bot_version_id> --symbol USTEC_x100 --report-only   # solo el informe
 ```
 
 ## API
@@ -129,10 +135,13 @@ ts stats --bot EA_Nasdaq_FVG_Retest --group-by dna:tendencia_h1_rel   # por una 
 | `GET /v1/raw-events` | admin | Últimos eventos recibidos |
 | `GET /v1/trades` | admin | Operaciones, más recientes primero. Filtros: `bot_id`, `version_id`, `symbol`, `status` (`OPEN`/`CLOSED`), `from`/`to` (hora de entrada, UTC), `limit` (≤ 500), `offset` |
 | `GET /v1/trades/{trade_id}` | admin | Una operación con toda su historia (`events`) |
-| `GET /v1/trades/{trade_id}/analysis` | admin | Análisis vigente: `facts`, `hypotheses`, `data_quality` y `history` (todas las versiones). `version=N` para una anterior, `include_inputs=true` para ver los datos usados |
+| `GET /v1/trades/{trade_id}/analysis` | admin | Análisis vigente: `facts`, `hypotheses` (con `validation`: estado de su regla en la fase 9), `data_quality` y `history` (todas las versiones). `version=N` para una anterior, `include_inputs=true` para ver los datos usados |
 | `GET /v1/trades/{trade_id}/dna` | admin | Trading DNA vigente por secciones, con el motivo de cada NULL, cobertura de velas y `history` (todas las versiones). `version=N` para una anterior |
 | `GET /v1/dna/features` | admin | Catálogo de variables del DNA: tipo, timeframe, unidad, definición y política de NULL |
 | `GET /v1/stats` | admin | Métricas de operaciones cerradas. Filtros: `bot_id`, `version_id`, `symbol`, `account_id`, `source`, `from`/`to` (hora de **cierre**). `group_by`: hasta 2 de `bot`, `version`, `symbol`, `direction`, `weekday`, `hour`, `session`, `timeframe`, `account`, `source`, `dna:<variable>`. Las operaciones sin bot van aparte en `unassigned` |
+| `GET /v1/patterns` | admin | Trampas y ventajas, validadas primero. Filtros: `bot_id`, `version_id`, `symbol`, `status` (`PROPOSED`, `TESTING`, `VALIDATED`, `REJECTED`, `DECAYED`), `kind` (`trap`/`edge`). `label` = "trampa validada" solo si pasó fuera de muestra; si no, "candidata, no validada", "rechazada" o "caducada". Métricas por tramo: `entrenamiento`, `validacion`, `fuera_de_muestra`, `forward` |
+| `GET /v1/patterns/{id}` | admin | Un patrón con todas sus pruebas, su split y la ejecución que lo propuso (candidatas probadas) |
+| `GET /v1/bots/{bot_id}/versions/{version_id}/report` | admin | Informe de la versión (sección 10): ganadoras frente a perdedoras, peores y mejores condiciones, mejor combinación, condiciones que aumentan el drawdown (MAE en R) y reglas de la fase 6, con muestra, win rate, expectativa, PF e IC dentro y fuera de muestra. `symbol` opcional |
 | `GET /v1/bots/{bot_id}/compare-versions` | admin | Métricas de cada versión del bot lado a lado, con avisos de muestra. Filtros: `symbol`, `account_id`, `source`, `from`/`to` |
 | `/dashboard` | navegador (sesión) | Dashboard web de solo lectura, ver [Dashboard](#dashboard) |
 
@@ -162,6 +171,7 @@ grep SUPERVISOR_ADMIN_TOKEN /opt/trading-supervisor/deploy/.env | cut -d= -f2
 | Página | Qué muestra |
 | --- | --- |
 | Resumen | Latido de cada terminal (online si < 2 min), cola del worker (PENDING/FAILED) y último evento procesado, balance y equity por cuenta, gráfico de balance/equity (24h/7d/30d, máximo 500 puntos), operaciones abiertas, cerradas hoy y en 7 días (número, neto, win rate) |
+| Trampas | Por versión de bot: primero las **trampas validadas** (fuera de muestra, entrenamiento y forward con n, expectativa en R e IC, win rate y PF), después las candidatas marcadas "candidata, no validada", cuántas candidatas se probaron y, con pocos datos, "Con N operaciones cerradas todavía no se puede validar ninguna trampa; se necesitan al menos 100…". El Resumen muestra las trampas activas |
 | Operaciones | Abiertas y cerradas con filtros (bot o "sin asignar", versión, símbolo, estado, dirección, fechas de entrada) que se aplican sin recargar (HTMX), 50 por página, con neto, puntos, R y motivo de salida |
 | Detalle | Todos los campos, historia de eventos, gráfico de cierres M1 de entrada − 30 min a cierre + 30 min con entrada, SL/TP inicial y final y cierre, MFE/MAE, notas de calidad de datos, el análisis (fase 6) y el Trading DNA por secciones ("sin dato" con su motivo y cobertura de velas por timeframe) |
 | Bots | Bots → versiones → despliegues, con operaciones, win rate, neto y profit factor por versión (las estadísticas completas llegan con la Fase 6). Solo lectura: el registro sigue por API/CLI |
@@ -310,6 +320,51 @@ con velas cerradas antes de la entrada. Definición de cada variable:
 - **Límites del VPS:** H1 consulta como mucho 35 días de M1 (`SUPERVISOR_DNA_HISTORY_DAYS`)
   y de ahí salen H4 y D1; M1/M5/M15 solo las velas que necesitan. Para tener todo desde el
   primer día sube `BarsBackfillHours` del EA a **720**.
+
+## Cómo se valida una trampa
+
+Una **trampa** es una condición de entrada en la que un bot pierde de forma sistemática
+(expectativa negativa en R). Encontrarlas es lo primero; las ventajas, lo segundo. Código:
+`supervisor/analytics/patterns.py` (estadística pura, sin NumPy ni SciPy) y
+`pattern_search.py` (datos, splits y persistencia).
+
+1. **Alcance:** una versión de bot (nunca se mezclan versiones) y, opcional, un símbolo. Solo
+   operaciones cerradas con riesgo conocido (R = neto / riesgo inicial).
+2. **Split cronológico congelado:** con al menos 100 operaciones
+   (`SUPERVISOR_PATTERNS_MIN_TRADES`) se ordenan por hora de cierre y se cortan sin barajar:
+   60 % entrenamiento, 20 % validación, 20 % fuera de muestra
+   (`SUPERVISOR_PATTERNS_TRAIN_FRACTION`, `..._VALIDATION_FRACTION`). El corte se guarda en
+   `data_splits` (de solo inserción). Lo que cierra después es **forward**.
+3. **Búsqueda solo en entrenamiento:** condiciones simples sobre las variables buscables del
+   DNA, la dirección, la reentrada y los hechos previos a la entrada de la fase 6 (precio frente
+   a EMA200/EMA50 en H1 y M15); las numéricas en cuartiles calculados **solo con
+   entrenamiento**. Además pares (A y B) de variables distintas con muestra (como mucho 3000).
+   Cada candidata necesita 30 operaciones y 30 en su complemento.
+4. **Prueba y corrección:** test t de Welch (condición frente a complemento) y FDR de
+   Benjamini-Hochberg a q = 0.05 sobre **todas** las candidatas probadas; el número total de
+   candidatas generadas, probadas y sin muestra queda en `pattern_runs`. Las que pasan se
+   guardan como hipótesis (`PROPOSED`) con su prueba de entrenamiento: trampa si la expectativa
+   es menor que la del complemento, ventaja si es mayor.
+5. **Validación:** mismo sentido, al menos 15 operaciones y el IC95 de la expectativa sin
+   cruzar 0 (por debajo para una trampa). Si falla: `REJECTED`; si pasa: `TESTING`.
+6. **Fuera de muestra, una sola vez:** el mismo criterio con al menos 15 operaciones:
+   `VALIDATED` o `REJECTED`. Si aún no hay 15, se espera y se evalúa **una** vez con el tramo
+   fuera de muestra más el forward. Un índice único impide repetirlo.
+7. **Forward:** las validadas se comprueban con lo que cierra después; si con al menos 20
+   operaciones la expectativa pasa a ser significativamente contraria, `DECAYED`.
+8. **Repetición:** el worker repasa una vez al día (`SUPERVISOR_PATTERNS_INTERVAL_SECONDS`, como
+   mucho 5 versiones por pasada) y solo repite la búsqueda con 20 operaciones cerradas nuevas
+   (`SUPERVISOR_PATTERNS_NEW_TRADES`): split nuevo con todos los datos, sin duplicar hipótesis
+   vivas. Sin datos nuevos no se vuelve a mirar el fuera de muestra.
+9. **Reglas de la fase 6:** las que dependen solo de hechos previos a la entrada (contra
+   tendencia, volatilidad, spread, reentrada, noticia) pasan por el mismo circuito con su propia
+   familia FDR. Los hallazgos del análisis no se modifican: `GET /v1/trades/{id}/analysis` y el
+   dashboard muestran el estado de la regla por consulta.
+
+Solo lo que pasó fuera de muestra se llama **"trampa validada"**; todo lo demás se muestra
+como "candidata, no validada", con cuántas candidatas se probaron. Las secciones descriptivas
+del informe (ganadoras frente a perdedoras, condiciones que aumentan el MAE) se marcan como no
+validadas.
 
 ## Estadísticas
 

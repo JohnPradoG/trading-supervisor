@@ -2,7 +2,9 @@
 
 Consulta raw_events pendientes cada worker_poll_interval_seconds, los convierte en
 operaciones y cada worker_maintenance_interval_seconds hace el repaso de operaciones
-recientes. Con SIGTERM o SIGINT termina el lote en curso y sale limpio.
+recientes. Cada patterns_interval_seconds (un día) repasa la búsqueda de patrones de las
+versiones con operaciones (solo repite la búsqueda con patterns_new_trades cerradas nuevas).
+Con SIGTERM o SIGINT termina el lote en curso y sale limpio.
 """
 
 import logging
@@ -15,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from supervisor import __version__
+from supervisor.analytics.pattern_search import patterns_pass
 from supervisor.config import Settings, get_settings
 from supervisor.log_config import configure_logging
 from supervisor.worker.maintenance import maintenance_pass
@@ -34,6 +37,7 @@ def run_forever(
     session_factory: sessionmaker[Session], settings: Settings, stop: threading.Event
 ) -> None:
     last_maintenance = float("-inf")
+    last_patterns = float("-inf")
     failures = 0
     while not stop.is_set():
         try:
@@ -44,6 +48,9 @@ def run_forever(
             if time.monotonic() - last_maintenance >= settings.worker_maintenance_interval_seconds:
                 maintenance_pass(session_factory, settings)
                 last_maintenance = time.monotonic()
+            if time.monotonic() - last_patterns >= settings.patterns_interval_seconds:
+                patterns_pass(session_factory, settings)
+                last_patterns = time.monotonic()
             failures = 0
         except TRANSIENT_ERRORS:
             failures += 1
