@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # Operaciones re-analizadas como máximo en cada repaso del worker.
     analysis_max_per_pass: int = Field(default=200, ge=1)
 
+    # Trading DNA (fase 8). Días de velas M1 que puede consultar el DNA de una operación
+    # (ventana de H1, de la que salen H4 y D1); acota la consulta en el VPS.
+    dna_history_days: int = Field(default=35, ge=7, le=120)
+    # Operaciones cuyo DNA se recalcula como máximo en cada repaso del worker.
+    dna_max_per_pass: int = Field(default=100, ge=1)
+
     # Dashboard web (/dashboard). La sesión es una cookie firmada con HMAC-SHA256 con una clave
     # derivada de admin_token: rotar el token invalida todas las sesiones.
     dashboard_session_hours: float = Field(default=12, gt=0, le=24 * 30)

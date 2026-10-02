@@ -80,6 +80,15 @@ def _duration(seconds: int | None) -> str:
     return f"{secs} s"
 
 
+def _dnaval(value) -> str:
+    """Valor de una variable del DNA (los NULL se muestran aparte, con su motivo)."""
+    if isinstance(value, bool):
+        return "sí" if value else "no"
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value).replace("_", " ")
+
+
 def _sign(value) -> str:
     if value is None:
         return ""
@@ -87,7 +96,14 @@ def _sign(value) -> str:
 
 
 templates.env.filters.update(
-    utc=_utc, num=_num, price=_price, dec=_dec, pct=_pct, duration=_duration, sign=_sign
+    utc=_utc,
+    num=_num,
+    price=_price,
+    dec=_dec,
+    pct=_pct,
+    duration=_duration,
+    sign=_sign,
+    dnaval=_dnaval,
 )
 templates.env.globals["version"] = __version__
 
@@ -380,6 +396,7 @@ def operacion(
         "d": detail,
         "t": detail.row.trade,
         "analysis": svc.trade_analysis(session, trade_id),
+        "dna": svc.trade_dna(session, trade_id),
         "bars_margin": svc.BARS_MARGIN_MINUTES,
     }
     return _render(request, "operacion.html", context, dash)

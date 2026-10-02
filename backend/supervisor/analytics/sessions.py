@@ -34,6 +34,8 @@ _LABELS = (
     (21, 24, "FUERA_SESION"),
 )
 SESSION_LABELS = tuple(label for _, _, label in _LABELS)
+# (hora de inicio, hora de fin, etiqueta) de cada bloque, para el Trading DNA (fase 8).
+SESSION_BLOCKS = _LABELS
 
 
 def _utc(value: datetime) -> datetime:

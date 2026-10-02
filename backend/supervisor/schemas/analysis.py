@@ -150,3 +150,62 @@ class CompareVersionsOut(BaseModel):
     parameters: dict[str, Any]
     versions: list[VersionStats]
     comparison_note: str
+
+
+# Trading DNA (fase 8) ----------------------------------------------------------------------
+
+
+class DnaFeatureOut(BaseModel):
+    name: str
+    label: str
+    value_type: str
+    timeframe: str | None
+    unit: str | None
+    value: Any
+    # Motivo cuando el valor es NULL (nunca se inventa un dato).
+    null_reason: str | None
+
+
+class DnaSectionOut(BaseModel):
+    group: str
+    title: str
+    features: list[DnaFeatureOut]
+
+
+class DnaVersionOut(_Out):
+    dna_version: int
+    feature_set_version: int
+    input_hash: str
+    computed_at: datetime
+
+
+class DnaOut(DnaVersionOut):
+    data_cutoff: datetime
+    last_bar_time: datetime | None
+    data_quality: dict[str, Any]
+    sections: list[DnaSectionOut]
+    features: dict[str, Any]
+    null_reasons: dict[str, str]
+
+
+class TradeDnaOut(BaseModel):
+    trade_id: uuid.UUID
+    dna: DnaOut | None
+    history: list[DnaVersionOut]
+    note: str | None = None
+
+
+class FeatureDefinitionOut(BaseModel):
+    name: str
+    version: int
+    group: str
+    label: str
+    value_type: str
+    timeframe: str | None
+    unit: str | None
+    searchable: bool
+    available: bool
+    categories: list[str] | None
+    bins: list[float] | None
+    formula: str
+    null_policy: str

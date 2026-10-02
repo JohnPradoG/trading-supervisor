@@ -8,6 +8,12 @@
 - Agrupación por hasta MAX_GROUP_DIMENSIONS dimensiones de GROUP_DIMENSIONS. Día, hora y
   sesión salen de la hora de ENTRADA en UTC (la decisión del bot); timeframe es el principal
   de la versión del bot.
+- Trading DNA (fase 8): `dna:<variable>` agrupa por una variable del DNA vigente de cada
+  operación (catálogo en GET /v1/dna/features). Categóricas y booleanas, por valor; numéricas,
+  por los tramos fijos de la variable si los tiene (RSI 30/50/70, ADX 20/25/40, volatilidad
+  relativa 20/50/80) o por cuartiles de las operaciones del propio filtro (ver
+  supervisor.analytics.binning). Las operaciones sin DNA o con la variable NULL van en el
+  grupo "sin dato".
 - Memoria: se cargan solo columnas (no objetos ORM), ordenadas por cierre y con un tope de
   stats_max_trades filas (~1 KB por fila en Python); si el filtro abarca más, se rechaza la
   consulta pidiendo acotarla en lugar de truncar en silencio.
@@ -16,13 +22,15 @@
 import uuid
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from supervisor.analytics.binning import bin_index, bin_label, quantile_edges
+from supervisor.analytics.dna_features import FEATURES_BY_NAME
 from supervisor.analytics.sessions import SESSION_HOURS, WEEKDAYS, session_label
 from supervisor.analytics.statistics import StatsParams, TradeResult, compute_metrics
 from supervisor.config import Settings
@@ -68,6 +76,8 @@ class Row:
     timeframe: str | None
     bot_id: uuid.UUID | None
     bot_name: str | None
+    # Variables del DNA vigente pedidas en group_by (fase 8).
+    dna: dict[str, Any] = field(default_factory=dict)
 
 
 def _weekday(row: Row) -> tuple[Any, str]:
@@ -85,8 +95,8 @@ def _session(row: Row) -> tuple[Any, str]:
     return label, label
 
 
-# dimensión -> función (fila -> (clave ordenable, etiqueta)). Fase 8: añadir aquí las
-# condiciones del Trading DNA (uniendo trade_dna en `load_rows`).
+# dimensión -> función (fila -> (clave ordenable, etiqueta)). Las del Trading DNA
+# (`dna:<variable>`) se construyen al consultar (ver dna_dimension).
 GROUP_DIMENSIONS: dict[str, Callable[[Row], tuple[Any, str]]] = {
     "bot": lambda r: (r.bot_name or "", r.bot_name or "sin bot"),
     "version": lambda r: ((r.bot_name or "", r.version or ""), f"{r.bot_name} {r.version}"),
@@ -99,7 +109,9 @@ GROUP_DIMENSIONS: dict[str, Callable[[Row], tuple[Any, str]]] = {
     "account": lambda r: (str(r.result.account_id), str(r.result.account_id)),
     "source": lambda r: (r.source, r.source),
 }
-PENDING_DIMENSIONS = {"dna": "condiciones del Trading DNA: disponible en la fase 8"}
+DNA_PREFIX = "dna:"
+NO_DATA = "sin dato"
+QUANTILE_PARTS = 4
 
 
 def parse_group_by(value: str | None) -> list[str]:
@@ -107,8 +119,18 @@ def parse_group_by(value: str | None) -> list[str]:
         return []
     dims = [d.strip().lower() for d in value.split(",") if d.strip()]
     for dim in dims:
-        if dim in PENDING_DIMENSIONS:
-            raise ServiceError(f"group_by '{dim}': {PENDING_DIMENSIONS[dim]}")
+        if dim == "dna":
+            raise ServiceError(
+                "group_by 'dna' necesita una variable: dna:<variable> "
+                "(catálogo en GET /v1/dna/features)"
+            )
+        if dim.startswith(DNA_PREFIX):
+            if dim[len(DNA_PREFIX) :] not in FEATURES_BY_NAME:
+                raise ServiceError(
+                    f"group_by '{dim}': variable del DNA desconocida "
+                    "(catálogo en GET /v1/dna/features)"
+                )
+            continue
         if dim not in GROUP_DIMENSIONS:
             valid = ", ".join(GROUP_DIMENSIONS)
             raise ServiceError(f"group_by '{dim}' no válido; opciones: {valid}")
@@ -139,6 +161,8 @@ def parameters(settings: Settings) -> dict[str, Any]:
         "time_field": "entry_time (UTC)",
         "sessions_utc": {k: f"{a:02d}-{b:02d}" for k, (a, b) in SESSION_HOURS.items()},
         "max_trades": settings.stats_max_trades,
+        "dna_numeric_bins": "tramos fijos de la variable o cuartiles de las operaciones del "
+        "filtro (rango más cercano); NULL o sin DNA = 'sin dato'",
     }
 
 
@@ -220,19 +244,76 @@ def load_rows(session: Session, filters: StatsFilters, max_rows: int) -> list[Ro
     ]
 
 
-def _key_value(dim: str, row: Row) -> Any:
+def attach_dna(session: Session, rows: list[Row], names: list[str]) -> list[Row]:
+    """Añade a cada fila las variables `names` de su DNA vigente (la mayor dna_version)."""
+    if not rows or not names:
+        return rows
+    ids = [uuid.UUID(r.result.trade_id) for r in rows]
+    found: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(ids), 5000):
+        result = session.execute(
+            text(
+                "SELECT DISTINCT ON (trade_id) trade_id, features FROM trade_dna"
+                " WHERE trade_id = ANY(:ids) ORDER BY trade_id, dna_version DESC"
+            ),
+            {"ids": ids[start : start + 5000]},
+        )
+        for trade_id, features in result:
+            found[str(trade_id)] = {n: features.get(n) for n in names}
+    return [Row(**{**r.__dict__, "dna": found.get(r.result.trade_id, {})}) for r in rows]
+
+
+def dna_dimension(name: str, rows: list[Row]) -> Callable[[Row], tuple[Any, str]]:
+    """Función de agrupación por la variable `name` del DNA (ver cabecera)."""
+    spec = FEATURES_BY_NAME[name]
+    if spec.value_type == "numeric":
+        values = [r.dna.get(name) for r in rows]
+        numbers = [float(v) for v in values if v is not None]
+        edges = list(spec.bins) or quantile_edges(numbers, QUANTILE_PARTS)
+
+        def numeric(row: Row) -> tuple[Any, str]:
+            value = row.dna.get(name)
+            if value is None:
+                return 10_000, f"{name}: {NO_DATA}"
+            index = bin_index(edges, float(value))
+            return index, f"{name} {bin_label(edges, index)}"
+
+        return numeric
+
+    def categorical(row: Row) -> tuple[Any, str]:
+        value = row.dna.get(name)
+        if value is None:
+            return "~", f"{name}: {NO_DATA}"
+        shown = str(value).lower() if isinstance(value, bool) else str(value)
+        return str(value), f"{name}={shown}"
+
+    return categorical
+
+
+def _key_value(dim: str, row: Row, fn: Callable[[Row], tuple[Any, str]]) -> Any:
     """Valor de la clave de grupo que devuelve la API (id cuando lo hay)."""
     if dim == "bot":
         return str(row.bot_id) if row.bot_id else None
     if dim == "version":
         return str(row.version_id) if row.version_id else None
-    return GROUP_DIMENSIONS[dim](row)[0]
+    if dim.startswith(DNA_PREFIX):
+        name = dim[len(DNA_PREFIX) :]
+        if FEATURES_BY_NAME[name].value_type == "numeric":
+            return fn(row)[1].removeprefix(f"{name} ").removeprefix(f"{name}: ")
+        return row.dna.get(name)
+    return fn(row)[0]
 
 
 def group_metrics(rows: list[Row], dims: list[str], params: StatsParams) -> list[dict[str, Any]]:
+    fns = {
+        d: dna_dimension(d[len(DNA_PREFIX) :], rows)
+        if d.startswith(DNA_PREFIX)
+        else GROUP_DIMENSIONS[d]
+        for d in dims
+    }
     buckets: dict[tuple, list[Row]] = defaultdict(list)
     for row in rows:
-        buckets[tuple(GROUP_DIMENSIONS[d](row)[0] for d in dims)].append(row)
+        buckets[tuple(fns[d](row)[0] for d in dims)].append(row)
     groups = []
 
     def order(key: tuple) -> tuple:
@@ -243,8 +324,8 @@ def group_metrics(rows: list[Row], dims: list[str], params: StatsParams) -> list
         first = members[0]
         groups.append(
             {
-                "key": {d: _key_value(d, first) for d in dims},
-                "label": " · ".join(GROUP_DIMENSIONS[d](first)[1] for d in dims),
+                "key": {d: _key_value(d, first, fns[d]) for d in dims},
+                "label": " · ".join(fns[d](first)[1] for d in dims),
                 "metrics": compute_metrics([m.result for m in members], params),
             }
         )
@@ -256,6 +337,9 @@ def stats(
 ) -> dict[str, Any]:
     params = params_from(settings)
     rows = load_rows(session, filters, settings.stats_max_trades)
+    dna_names = [d[len(DNA_PREFIX) :] for d in group_by if d.startswith(DNA_PREFIX)]
+    if dna_names:
+        rows = attach_dna(session, rows, dna_names)
     assigned = [r for r in rows if r.deployment_id is not None]
     unassigned = [r for r in rows if r.deployment_id is None]
     by_bot = filters.bot_id is not None or filters.version_id is not None

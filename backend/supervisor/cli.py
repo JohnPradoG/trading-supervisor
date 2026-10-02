@@ -10,6 +10,7 @@
     ts trade-summary
     ts reprocess [--terminal exness-win-01]
     ts analyze --trade <trade_id> | --all-closed
+    ts dna --trade <trade_id> | --all
     ts stats [--bot EA_Nasdaq_FVG_Retest] [--group-by version,session] [--from 2026-10-01]
 
 Las cuentas y las API keys se crean aquí y no por HTTP: así una API key comprometida o un
@@ -26,11 +27,13 @@ from typing import Any
 from sqlalchemy import select, update
 
 from supervisor.analytics.analyzer import analyze_by_id, closed_trade_ids
+from supervisor.analytics.dna import dna_by_id, trade_ids_page
 from supervisor.config import get_settings
 from supervisor.db import session_scope
 from supervisor.models import Account, ApiClient, Bot, Broker, RawEvent, Terminal
 from supervisor.models.enums import AccountType, MarginMode, RawEventStatus, TradeSource
 from supervisor.security.api_keys import generate_api_key
+from supervisor.services import dna as dna_service
 from supervisor.services import stats as stats_service
 from supervisor.services.errors import ServiceError
 from supervisor.services.trades import summary
@@ -228,6 +231,69 @@ def analyze(args: argparse.Namespace) -> None:
     )
 
 
+def _dna_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "sí" if value else "no"
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value)
+
+
+def print_dna(dna) -> None:
+    print(
+        f"DNA v{dna.dna_version} (variables v{dna.feature_set_version}), datos anteriores a "
+        f"{dna.data_cutoff.isoformat()} · última vela M1 "
+        f"{dna.last_bar_time.isoformat() if dna.last_bar_time else 'ninguna'}"
+    )
+    for section in dna_service.sections(dna):
+        print(f"\n[{section['title']}]")
+        for f in section["features"]:
+            if f["value"] is None:
+                shown = f"sin dato ({f['null_reason']})"
+            else:
+                shown = _dna_value(f["value"]) + (f" {f['unit']}" if f["unit"] else "")
+            print(f"  {f['label']}: {shown}")
+
+
+def dna(args: argparse.Namespace) -> None:
+    """Calcula el Trading DNA. Solo crea versión nueva si cambiaron sus entradas (velas,
+    operación, parámetros o conjunto de variables): repetirlo no duplica nada."""
+    settings = get_settings()
+    if args.trade:
+        with session_scope() as session:
+            try:
+                result = dna_by_id(session, args.trade, settings)
+            except LookupError as exc:
+                sys.exit(str(exc))
+            verb = "creada" if result.status == "creado" else "sin cambios, vigente"
+            nulls = sum(1 for v in result.dna.features.values() if v is None)
+            print(
+                f"Versión {result.dna.dna_version} del DNA {verb}: "
+                f"{len(result.dna.features)} variables, {nulls} sin dato"
+            )
+            print_dna(result.dna)
+        return
+    totals: Counter = Counter()
+    after = None
+    while True:
+        with session_scope() as session:
+            page = trade_ids_page(session, after, ANALYZE_PAGE)
+            for _, trade_id in page:
+                try:
+                    with session.begin_nested():
+                        totals[dna_by_id(session, trade_id, settings).status] += 1
+                except Exception as exc:  # una operación con datos raros no para el resto
+                    totals["error"] += 1
+                    print(f"error en {trade_id}: {exc}", file=sys.stderr)
+        if len(page) < ANALYZE_PAGE:
+            break
+        after = page[-1]
+    print(
+        f"Operaciones: {sum(totals.values())}. Versiones nuevas del DNA: {totals['creado']}, "
+        f"sin cambios: {totals['sin_cambios']}, errores: {totals['error']}"
+    )
+
+
 def _pct(value: float | None) -> str:
     return "-" if value is None else f"{value * 100:.1f}%"
 
@@ -380,6 +446,12 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--all-closed", action="store_true", help="todas las cerradas")
     p.set_defaults(func=analyze)
 
+    p = sub.add_parser("dna", help="calcular el Trading DNA (versiones nuevas si cambió algo)")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--trade", type=_uuid, help="trade_id de una operación")
+    target.add_argument("--all", action="store_true", help="todas las operaciones")
+    p.set_defaults(func=dna)
+
     p = sub.add_parser("stats", help="estadísticas de operaciones cerradas")
     p.add_argument("--bot", help="nombre o bot_id")
     p.add_argument("--version-id", type=_uuid)
@@ -390,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--to", dest="date_to", type=_date, help="hora de cierre hasta (UTC)")
     p.add_argument(
         "--group-by",
-        help="hasta 2 de: " + ", ".join(stats_service.GROUP_DIMENSIONS),
+        help="hasta 2 de: " + ", ".join(stats_service.GROUP_DIMENSIONS) + ", dna:<variable>",
     )
     p.set_defaults(func=stats)
     return parser

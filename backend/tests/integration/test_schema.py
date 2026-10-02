@@ -136,3 +136,44 @@ def test_migration_0004_roundtrip_keeps_existing_analyses(
             ),
             {"a": analysis_id},
         )
+
+
+def test_migration_0005_roundtrip_and_refuses_to_drop_old_dna(
+    database_url: str, engine: Engine, terminal: dict
+) -> None:
+    """0005 rehace trade_dna (la de 0001 nunca se escribió); si tuviera filas se detiene en
+    lugar de perderlas."""
+    cfg = alembic_config(database_url)
+    engine.dispose()
+    command.downgrade(cfg, "0004")
+    assert "trend_h1" in _columns(engine, "trade_dna")
+    assert "value_type" not in _columns(engine, "feature_definitions")
+    with engine.begin() as conn:
+        trade_id = conn.execute(
+            text(
+                "INSERT INTO trades (trade_id, account_id, position_id, magic_number, symbol,"
+                " direction, order_type, source, entry_time, entry_price, initial_volume,"
+                " max_volume) SELECT gen_random_uuid(), accounts.id, 515151, 1, 'X', 'BUY', 'UNKNOWN',"
+                " 'DEMO', now(), 1, 1, 1 FROM terminals t JOIN accounts ON accounts.id = t.account_id"
+                " WHERE t.id = :term RETURNING trade_id"
+            ),
+            {"term": terminal["terminal_id"]},
+        ).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO trade_dna (trade_id, feature_set_version, source, data_cutoff)"
+                " VALUES (:t, 1, 'SERVER', now())"
+            ),
+            {"t": trade_id},
+        )
+    engine.dispose()
+    with pytest.raises(Exception, match="trade_dna tiene filas"):
+        command.upgrade(cfg, "head")
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM trade_dna"))
+    engine.dispose()
+    command.upgrade(cfg, "head")
+    assert {"dna_version", "input_hash", "features", "null_reasons"} <= _columns(
+        engine, "trade_dna"
+    )
+    assert {"value_type", "label", "searchable", "unit"} <= _columns(engine, "feature_definitions")

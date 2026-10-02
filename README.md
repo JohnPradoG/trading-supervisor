@@ -15,8 +15,9 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | 4 · Bridge MT5 (EA Monitor) | Hecha: EA de solo lectura con cola en disco, ver [mt5/README.md](mt5/README.md) |
 | 5 · Registro de operaciones | Hecha: worker que convierte deals, SL/TP y fotos de posiciones en operaciones con riesgo, motivo de salida, MFE/MAE y reentradas |
 | 6 · Análisis | **Hecha**: análisis post-operación versionado (hechos medidos separados de hipótesis no validadas) y estadísticas con intervalos de confianza y avisos de muestra pequeña |
-| 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`. Pendiente: Trading DNA, patrones, experimentos y alertas (llegan con sus fases) |
-| 8 · Trading DNA | Siguiente |
+| 7 · Dashboard | **Hecha (núcleo)**: resumen, operaciones con filtros, detalle con gráfico, bots y sistema en `/dashboard`. Pendiente: patrones, experimentos y alertas (llegan con sus fases) |
+| 8 · Trading DNA | **Hecha**: condiciones de mercado al entrar (tendencia por timeframe, indicadores, estructura, liquidez, FVG, order blocks, volatilidad, tiempo; noticias NULL hasta tener calendario), versionadas y sin lookahead, ver [docs/trading-dna.md](docs/trading-dna.md) |
+| 9 · Detección de patrones | Siguiente |
 
 ## Estructura
 
@@ -26,14 +27,17 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
   supervisor/api/    rutas FastAPI (ingesta del EA, registro y consulta de operaciones)
   supervisor/services/ lógica de ingesta, registro, consulta, estadísticas y dashboard
   supervisor/worker/ worker de operaciones: raw_events -> trades + trade_events (+ análisis)
-  supervisor/analytics/ análisis post-operación (hechos, reglas de hipótesis) y métricas
+  supervisor/analytics/ análisis post-operación (hechos, reglas de hipótesis), Trading DNA
+                     (indicadores, estructura) y métricas
   supervisor/dashboard/ dashboard web: rutas, sesión/CSRF, plantillas Jinja2, htmx y Chart.js
   supervisor/cli.py  alta de cuentas, terminales y API keys; reprocess; trade-summary;
-                     analyze; stats
+                     analyze; dna; stats
   migrations/        0001 esquema inicial · 0002 reglas de inmutabilidad (triggers)
                      0003 columnas del worker (event_time, reintentos, estado vivo)
                      0004 análisis versionado (hash de entradas, FACT/HYPOTHESIS)
+                     0005 Trading DNA versionado y catálogo de variables con tipos
   tests/             pruebas contra PostgreSQL real
+docs/                trading-dna.md (definición de cada variable del DNA), guía del VPS
 deploy/              Dockerfile, docker-compose.yml, Caddyfile, .env.example
 deploy/vps/          harden.sh (seguridad del VPS), install-docker.sh
 scripts/             backup.sh, restore.sh
@@ -46,7 +50,8 @@ mt5/                 EA Monitor de solo lectura (SupervisorMonitor.mq5) y su gu�
   por MT5 se descarta con `ON CONFLICT DO NOTHING`. `trades(account_id, position_id)` y
   `trade_events(trade_id, deal_ticket)` son únicos como segunda barrera.
 - **Historia inmutable:** `bot_versions`, `trade_events`, `trade_analyses`,
-  `analysis_findings`, `pattern_tests` y `data_splits` no admiten UPDATE ni DELETE.
+  `analysis_findings`, `trade_dna`, `feature_definitions`, `pattern_tests` y `data_splits` no
+  admiten UPDATE ni DELETE.
   `bots`, `deployments`, `trades`, `accounts` y `raw_events` no se pueden borrar. De
   `raw_events` solo cambian `status`, `attempts`, `processed_at`, `error` y
   `next_attempt_at`.
@@ -56,6 +61,8 @@ mt5/                 EA Monitor de solo lectura (SupervisorMonitor.mq5) y su gu�
   cuenta y símbolo.
 - **Validaciones:** versión semver, enums cerrados, operación cerrada con hora de cierre, velas
   con high ≥ low, cortes de validación en orden temporal.
+- **Sin lookahead en el DNA:** un CHECK impide guardar un DNA cuya última vela M1 termine
+  después de la entrada.
 - **UTC:** todas las fechas son `timestamptz` y las conexiones trabajan en UTC.
 
 ## Instalación en el VPS (Ubuntu 24.04)
@@ -76,7 +83,7 @@ sed -i "s/^SUPERVISOR_ADMIN_TOKEN=.*/SUPERVISOR_ADMIN_TOKEN=$(openssl rand -hex 
 nano .env                                # pon tu dominio en SUPERVISOR_DOMAIN
 chmod 600 .env
 docker compose up -d --build             # postgres, migrate, api, worker, caddy
-docker compose logs migrate              # debe terminar en "Running upgrade 0003 -> 0004"
+docker compose logs migrate              # debe terminar en "Running upgrade 0004 -> 0005"
 docker compose logs worker               # {"msg": "worker iniciado", ...}
 curl https://TU_DOMINIO/health           # {"status":"ok","database":"up",...}
 # 4. Backup diario a las 03:15 UTC:
@@ -100,8 +107,11 @@ ts trade-summary                                # operaciones abiertas/cerradas,
 ts reprocess [--terminal exness-win-01]         # reintentar los eventos FAILED
 ts analyze --trade <trade_id>                   # re-analizar una operación cerrada
 ts analyze --all-closed                         # re-analizar todas (solo crea versiones si cambió algo)
+ts dna --trade <trade_id>                       # Trading DNA de una operación (lo calcula si falta)
+ts dna --all                                    # recalcular todos (solo crea versiones si cambió algo)
 ts stats --bot EA_Nasdaq_FVG_Retest --group-by version   # tabla de métricas
 ts stats --symbol USTEC_x100 --from 2026-10-01 --group-by session,direction
+ts stats --bot EA_Nasdaq_FVG_Retest --group-by dna:tendencia_h1_rel   # por una variable del DNA
 ```
 
 ## API
@@ -120,7 +130,9 @@ ts stats --symbol USTEC_x100 --from 2026-10-01 --group-by session,direction
 | `GET /v1/trades` | admin | Operaciones, más recientes primero. Filtros: `bot_id`, `version_id`, `symbol`, `status` (`OPEN`/`CLOSED`), `from`/`to` (hora de entrada, UTC), `limit` (≤ 500), `offset` |
 | `GET /v1/trades/{trade_id}` | admin | Una operación con toda su historia (`events`) |
 | `GET /v1/trades/{trade_id}/analysis` | admin | Análisis vigente: `facts`, `hypotheses`, `data_quality` y `history` (todas las versiones). `version=N` para una anterior, `include_inputs=true` para ver los datos usados |
-| `GET /v1/stats` | admin | Métricas de operaciones cerradas. Filtros: `bot_id`, `version_id`, `symbol`, `account_id`, `source`, `from`/`to` (hora de **cierre**). `group_by`: hasta 2 de `bot`, `version`, `symbol`, `direction`, `weekday`, `hour`, `session`, `timeframe`, `account`, `source`. Las operaciones sin bot van aparte en `unassigned` |
+| `GET /v1/trades/{trade_id}/dna` | admin | Trading DNA vigente por secciones, con el motivo de cada NULL, cobertura de velas y `history` (todas las versiones). `version=N` para una anterior |
+| `GET /v1/dna/features` | admin | Catálogo de variables del DNA: tipo, timeframe, unidad, definición y política de NULL |
+| `GET /v1/stats` | admin | Métricas de operaciones cerradas. Filtros: `bot_id`, `version_id`, `symbol`, `account_id`, `source`, `from`/`to` (hora de **cierre**). `group_by`: hasta 2 de `bot`, `version`, `symbol`, `direction`, `weekday`, `hour`, `session`, `timeframe`, `account`, `source`, `dna:<variable>`. Las operaciones sin bot van aparte en `unassigned` |
 | `GET /v1/bots/{bot_id}/compare-versions` | admin | Métricas de cada versión del bot lado a lado, con avisos de muestra. Filtros: `symbol`, `account_id`, `source`, `from`/`to` |
 | `/dashboard` | navegador (sesión) | Dashboard web de solo lectura, ver [Dashboard](#dashboard) |
 
@@ -151,7 +163,7 @@ grep SUPERVISOR_ADMIN_TOKEN /opt/trading-supervisor/deploy/.env | cut -d= -f2
 | --- | --- |
 | Resumen | Latido de cada terminal (online si < 2 min), cola del worker (PENDING/FAILED) y último evento procesado, balance y equity por cuenta, gráfico de balance/equity (24h/7d/30d, máximo 500 puntos), operaciones abiertas, cerradas hoy y en 7 días (número, neto, win rate) |
 | Operaciones | Abiertas y cerradas con filtros (bot o "sin asignar", versión, símbolo, estado, dirección, fechas de entrada) que se aplican sin recargar (HTMX), 50 por página, con neto, puntos, R y motivo de salida |
-| Detalle | Todos los campos, historia de eventos, gráfico de cierres M1 de entrada − 30 min a cierre + 30 min con entrada, SL/TP inicial y final y cierre, MFE/MAE y notas de calidad de datos. Hueco "Análisis" para la Fase 6 |
+| Detalle | Todos los campos, historia de eventos, gráfico de cierres M1 de entrada − 30 min a cierre + 30 min con entrada, SL/TP inicial y final y cierre, MFE/MAE, notas de calidad de datos, el análisis (fase 6) y el Trading DNA por secciones ("sin dato" con su motivo y cobertura de velas por timeframe) |
 | Bots | Bots → versiones → despliegues, con operaciones, win rate, neto y profit factor por versión (las estadísticas completas llegan con la Fase 6). Solo lectura: el registro sigue por API/CLI |
 | Sistema | Terminales y versión del EA, últimos 50 eventos FAILED con su error, operaciones sin despliegue agrupadas por cuenta + magic + símbolo (lo que falta registrar) |
 
@@ -274,6 +286,31 @@ Reglas y convenciones:
   re-analiza las operaciones de los últimos 7 días si cambió la operación, los parámetros o el
   analizador, o si faltaban velas y han llegado (como mucho 200 por pasada).
 
+## Trading DNA (fase 8)
+
+Cada operación guarda las condiciones de mercado **al entrar** (`trade_dna`), calculadas solo
+con velas cerradas antes de la entrada. Definición de cada variable:
+[docs/trading-dna.md](docs/trading-dna.md).
+
+- **Cuándo:** el worker lo calcula al crear la operación (la entrada ya se conoce) y si la
+  entrada cambia al recomponer deals desordenados. El repaso de cada 5 minutos lo recalcula
+  (operaciones de los últimos 7 días, como mucho 100 por pasada, `SUPERVISOR_DNA_MAX_PER_PASS`)
+  si falta, si cambió la operación o el conjunto de variables, o si le faltaban velas y han
+  llegado.
+- **Versiones:** de solo inserción con `input_hash` (operación, velas usadas, noticias,
+  parámetros y versión del conjunto de variables): repetir el cálculo no crea nada; más
+  velas anteriores a la entrada crean `dna_version + 1` y la anterior queda como historia.
+- **Secciones:** tendencia M1/M5/M15/H1/H4/D1 (y relativa a la dirección), EMA20/50/200 en
+  ATR, RSI, ATR, ROC y ADX en el timeframe principal del bot, estructura (swings, HH/HL,
+  BOS/CHOCH, rango), liquidez (barridos, máximos/mínimos iguales, día y sesión anteriores),
+  FVG, order blocks, volatilidad (spread, rango reciente, percentil de ATR), tiempo y
+  noticias (NULL "sin fuente de noticias" mientras no haya calendario).
+- **NULL con motivo, nunca inventado:** sin velas suficientes, sin cobertura de M1 >= 80 % o
+  con datos de más de 96 h antes de la entrada, la variable queda NULL con la explicación.
+- **Límites del VPS:** H1 consulta como mucho 35 días de M1 (`SUPERVISOR_DNA_HISTORY_DAYS`)
+  y de ahí salen H4 y D1; M1/M5/M15 solo las velas que necesitan. Para tener todo desde el
+  primer día sube `BarsBackfillHours` del EA a **720**.
+
 ## Estadísticas
 
 `GET /v1/stats`, `compare-versions` y `ts stats` calculan sobre operaciones **cerradas**:
@@ -296,8 +333,10 @@ Salvaguardas contra conclusiones con poca muestra (sección 11):
   (`SUPERVISOR_STATS_MAX_TRADES`; si el filtro abarca más, pide acotarlo). Las métricas son
   Python puro (sin NumPy). El análisis agrega las velas en PostgreSQL y a Python llegan cientos
   de velas por operación.
-- Agrupar por condiciones del **Trading DNA** llegará con la fase 8 (`group_by=dna` responde
-  que aún no está disponible).
+- Agrupar por una variable del **Trading DNA** (fase 8): `group_by=dna:<variable>`.
+  Categóricas y booleanas por valor; numéricas por tramos fijos (RSI, ADX, volatilidad
+  relativa) o cuartiles de las operaciones del filtro. Sin DNA o NULL = "sin dato". Agrupar
+  no es validar: la fase 9 contrasta los patrones fuera de muestra.
 
 ## Desarrollo y pruebas
 

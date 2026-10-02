@@ -1,0 +1,50 @@
+{#
+  Trading DNA (fase 8). `dna` lo da supervisor.services.dashboard.trade_dna(): None si el
+  worker aún no lo calculó. Condiciones de mercado al ENTRAR, solo con velas cerradas antes
+  de la entrada. Un NULL se muestra como "sin dato" con su motivo: nunca se inventa.
+#}
+<section class="card" id="dna">
+  <h2>Trading DNA <span class="muted small">(condiciones al entrar, solo con velas cerradas antes de la entrada)</span></h2>
+  {% if dna %}
+    <p class="muted small">Versión {{ dna.dna_version }} · variables v{{ dna.feature_set_version }} · calculado {{ dna.computed_at | utc('%Y-%m-%d %H:%M') }} UTC ·
+      datos anteriores a {{ dna.data_cutoff | utc }} UTC · última vela M1 {{ dna.last_bar_time | utc('%Y-%m-%d %H:%M') }} ·
+      {{ dna.total - dna.nulls }} de {{ dna.total }} variables con dato{% if dna.note %} · {{ dna.note }}{% endif %}</p>
+    <div class="dna-grid">
+    {% for section in dna.sections %}
+      <div class="dna-section">
+        <h3>{{ section.title }}</h3>
+        <table class="dna-table">
+          <tbody>
+          {% for f in section.features %}
+            <tr>
+              <th scope="row">{{ f.label }}{% if f.timeframe %} <span class="muted small">{{ f.timeframe }}</span>{% endif %}</th>
+              {% if f.value is none %}
+              <td><span class="badge muted-badge">sin dato</span> <span class="muted small">{{ f.null_reason }}</span></td>
+              {% else %}
+              <td class="mono">{{ f.value | dnaval }}{% if f.unit %} <span class="muted small">{{ f.unit }}</span>{% endif %}</td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endfor %}
+    </div>
+    <details>
+      <summary class="muted small">Cobertura de velas por timeframe</summary>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>Timeframe</th><th class="num">Velas</th><th class="num">Cobertura M1</th><th>Primera</th><th>Última</th><th>Corte</th></tr></thead>
+        <tbody>
+        {% for c in dna.coverage %}
+          <tr><td>{{ c.tf }}</td><td class="num">{{ c.velas }}</td><td class="num">{{ (c.cobertura * 100) | pct if c.cobertura is not none else '—' }}</td>
+            <td class="nowrap">{{ c.primera or '—' }}</td><td class="nowrap">{{ c.ultima or '—' }}</td><td class="nowrap">{{ c.corte }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </details>
+  {% else %}
+    <p class="muted">DNA pendiente: el worker lo calcula al registrar la operación (o en su próximo repaso si faltaban velas).</p>
+  {% endif %}
+</section>

@@ -60,7 +60,7 @@ cada operación a su bot por el magic number y el símbolo (despliegues registra
 | `ApiBaseUrl` | `https://johntrading.duckdns.org` | Dirección del supervisor. Solo HTTPS. |
 | `ApiKey` | (vacío) | Key del terminal, empieza por `tsk_`. |
 | `BackfillHours` | 48 | Historial que revisa al arrancar. |
-| `BarsBackfillHours` | 24 | Velas M1 que envía la primera vez por símbolo. |
+| `BarsBackfillHours` | 24 | Velas M1 que envía la primera vez por símbolo. Recomendado **720** (30 días): EMAs y volatilidad del análisis y todo el Trading DNA desde el primer día. |
 | `ExtraBarSymbols` | (vacío) | Símbolos extra para guardar velas aunque no se operen, separados por coma. |
 | `HttpTimeoutMs` | 5000 | Espera máxima por petición. |
 | `VerboseLog` | false | Escribe cada envío en el diario (para diagnosticar). |

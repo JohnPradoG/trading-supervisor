@@ -125,3 +125,9 @@ pre.json { background: var(--surface-2); border-radius: 6px; padding: 0.6rem; ov
 .login label { color: var(--text-2); font-size: 0.85rem; }
 .alert { border: 1px solid var(--neg); color: var(--neg); border-radius: 6px; padding: 0.5rem 0.7rem; }
 .htmx-request #tabla-operaciones, #tabla-operaciones.htmx-request { opacity: 0.6; transition: opacity 0.2s; }
+
+/* Trading DNA (fase 8) */
+.dna-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0.5rem 1rem; }
+.dna-section h3 { margin-top: 0.6rem; }
+.dna-table th { width: 55%; font-weight: normal; color: var(--text-2); white-space: normal; font-size: 0.85rem; }
+.dna-table td { font-size: 0.85rem; overflow-wrap: anywhere; }
