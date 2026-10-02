@@ -1,0 +1,66 @@
+{% macro ci(pair, digits=2, pct=False) -%}
+  {%- if pair -%}
+    {%- if pair is mapping %}{% set lo, hi = pair.low, pair.high %}{% else %}{% set lo, hi = pair[0], pair[1] %}{% endif -%}
+    <span class="muted small nowrap">[{% if pct %}{{ (lo * 100) | pct }}, {{ (hi * 100) | pct }}{% else %}{{ lo | num(digits) }}, {{ hi | num(digits) }}{% endif %}]</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro pf(m) -%}
+  {%- if m.profit_factor is not none %}{{ m.profit_factor | num }}{% elif m.profit_factor_note and 'infinito' in m.profit_factor_note %}∞{% else %}—{% endif %}
+  {{ ci(m.profit_factor_ic95) }}
+{%- endmacro %}
+
+{% macro side_by_side(tables) -%}
+{% for t in tables %}
+<h3>{{ t.title }}</h3>
+<div class="table-wrap">
+<table class="lab-table">
+  <thead><tr><th>Métrica</th>{% for a, m in t.columns %}<th>{{ a.etiqueta }}{% if a.fuente != 'REAL' %} <span class="badge {{ 'warn' if a.fuente == 'CONTRAFACTUAL' else 'muted-badge' }}">{{ 'contrafactual' if a.fuente == 'CONTRAFACTUAL' else 'backtest' }}</span>{% endif %}</th>{% endfor %}</tr></thead>
+  <tbody>
+    <tr><th>Operaciones</th>{% for a, m in t.columns %}<td>{{ m.n_trades }}{% if m.sample_warning %} <span class="badge warn">muestra pequeña</span>{% endif %}</td>{% endfor %}</tr>
+    <tr><th>Win rate [IC95]</th>{% for a, m in t.columns %}<td>{{ (m.win_rate * 100) | pct if m.win_rate is not none else '—' }} {{ ci(m.win_rate_ci95, pct=True) }}</td>{% endfor %}</tr>
+    <tr><th>Profit factor [IC95]</th>{% for a, m in t.columns %}<td>{{ pf(m) }}</td>{% endfor %}</tr>
+    <tr><th>Expectativa en R [IC95]</th>{% for a, m in t.columns %}<td><span class="{{ m.expectancy_r | sign }}">{{ m.expectancy_r | num }}</span> {{ ci(m.expectancy_r_ci95) }}</td>{% endfor %}</tr>
+    <tr><th>Expectativa por operación [IC95]</th>{% for a, m in t.columns %}<td><span class="{{ m.expectancy | sign }}">{{ m.expectancy | num }}</span> {{ ci(m.expectancy_ci95) }}</td>{% endfor %}</tr>
+    <tr><th>Neto</th>{% for a, m in t.columns %}<td class="{{ m.cumulative_return | sign }}">{{ m.cumulative_return | num }}</td>{% endfor %}</tr>
+    <tr><th>Drawdown máximo [IC95]</th>{% for a, m in t.columns %}<td>{{ m.max_drawdown | num }}{% if m.max_drawdown_pct is not none %} <span class="muted small">({{ m.max_drawdown_pct | pct }})</span>{% endif %} {{ ci(m.max_drawdown_ic95) }}</td>{% endfor %}</tr>
+  </tbody>
+</table>
+</div>
+{% endfor %}
+{%- endmacro %}
+
+{% macro traps(arms) -%}
+<ul class="findings">
+{% for a in arms if a.trampas is not none %}
+  <li><strong>{{ a.etiqueta }}</strong>:
+  {% if a.trampas.validadas %}
+    {% for t in a.trampas.validadas %}<span class="badge bad">trampa validada</span> {{ t.statement }}{% if t.fuera_de_muestra is not none %} <span class="muted small">(fuera de muestra {{ t.fuera_de_muestra | num }} R)</span>{% endif %}{% if not loop.last %}; {% endif %}{% endfor %}
+  {% else %}<span class="muted">ninguna trampa validada</span>{% endif %}
+  {% if a.trampas.candidatas %}<span class="muted small"> · {{ a.trampas.candidatas }} candidata{{ 's' if a.trampas.candidatas != 1 }}, no validada{{ 's' if a.trampas.candidatas != 1 }}</span>{% endif %}
+  </li>
+{% endfor %}
+</ul>
+{%- endmacro %}
+
+{% macro curves(url) -%}
+<div class="chart-box">
+  <canvas data-chart="curves" data-url="{{ url }}" aria-label="Curvas de neto acumulado de cada brazo" role="img"></canvas>
+</div>
+<p class="muted small">Neto acumulado por hora de cierre (UTC; los backtests, en la hora del probador).</p>
+{%- endmacro %}
+
+{% macro version_form(versions, selected) -%}
+<form method="get" action="/dashboard/laboratorio/comparar" class="filters">
+  <label>Versión A
+    <select name="a">{% for v in versions %}<option value="{{ v.id }}" {% if selected and selected.a == v.id | string %}selected{% endif %}>{{ v.label }}</option>{% endfor %}</select>
+  </label>
+  <label>Versión B
+    <select name="b">{% for v in versions %}<option value="{{ v.id }}" {% if selected and selected.b == v.id | string %}selected{% elif not selected and loop.index == 2 %}selected{% endif %}>{{ v.label }}</option>{% endfor %}</select>
+  </label>
+  <label>Símbolo (opcional)
+    <input type="text" name="symbol" maxlength="64" value="{{ selected.symbol if selected and selected.symbol else '' }}">
+  </label>
+  <div class="filter-actions"><button type="submit" class="btn">Comparar</button></div>
+</form>
+{%- endmacro %}

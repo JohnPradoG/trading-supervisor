@@ -170,10 +170,34 @@
     }).catch(function (e) { console.error("velas", e); });
   }
 
+  // Laboratorio: neto acumulado de cada brazo ------------------------------------------
+  var ARM_COLORS = ["#3987e5", "#3fb67f", "#d95926", "#9085e9", "#c98500", "#e66767"];
+
+  function initCurves(root) {
+    root.querySelectorAll('canvas[data-chart="curves"]').forEach(function (canvas) {
+      getJSON(canvas.dataset.url).then(function (d) {
+        var x0 = Infinity, x1 = -Infinity;
+        var sets = d.series.map(function (s, i) {
+          s.points.forEach(function (p) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); });
+          var color = ARM_COLORS[i % ARM_COLORS.length];
+          var extra = s.fuente === "BACKTEST" ? { borderDash: [6, 4] } :
+            s.fuente === "CONTRAFACTUAL" ? { borderDash: [2, 3] } : {};
+          return line(s.label, color, s.points, extra);
+        });
+        replaceChart(canvas, {
+          type: "line",
+          data: { datasets: sets },
+          options: baseOptions(isFinite(x1 - x0) ? x1 - x0 : 0)
+        });
+      }).catch(function (e) { console.error("curvas", e); });
+    });
+  }
+
   function init(root) {
     if (!window.Chart) { return; }
     initEquity(root);
     initTrade(root);
+    initCurves(root);
   }
 
   document.addEventListener("DOMContentLoaded", function () { init(document); });

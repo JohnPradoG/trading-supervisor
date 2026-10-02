@@ -138,3 +138,8 @@ a.tile-link:hover { border-color: var(--accent); }
 .notice { border: 1px solid var(--warn); border-radius: 6px; padding: 0.5rem 0.7rem; margin: 0.5rem 0; }
 .trap-scope { color: var(--text-2); font-size: 0.85rem; }
 .trap-table td:first-child { min-width: 16rem; }
+/* Laboratorio */
+.lab-table th:first-child { color: var(--text-2); font-weight: normal; white-space: nowrap; }
+.lab-table td { font-variant-numeric: tabular-nums; }
+.inline-form { display: inline; margin: 0 0 0 0.4rem; }
+.btn-small { padding: 0.1rem 0.5rem; font-size: 0.8rem; }
