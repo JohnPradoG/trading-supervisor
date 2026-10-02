@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% from "partials/macros.html" import terminals_table %}
+{% block title %}Sistema{% endblock %}
+{% block content %}
+<h1>Sistema <span class="muted small">{{ now | utc('%Y-%m-%d %H:%M') }} UTC</span></h1>
+
+<section class="card">
+  <h2>Terminales</h2>
+  {{ terminals_table(terminals) }}
+</section>
+
+<section class="card">
+  <h2>Worker</h2>
+  <p>Pendientes: <strong>{{ backlog.pending }}</strong> · Fallidos: <strong class="{{ 'neg' if backlog.failed else '' }}">{{ backlog.failed }}</strong>
+    · Último procesado: {{ backlog.last_processed_at | utc }} UTC
+    {% if backlog.last_processed_id %}<span class="muted">(#{{ backlog.last_processed_id }} {{ backlog.last_processed_type }})</span>{% endif %}</p>
+  <p class="muted small">Los fallidos se reintentan con <code>supervisor-cli reprocess</code>.</p>
+</section>
+
+<section class="card">
+  <h2>Operaciones sin asignar <span class="muted small">(sin despliegue)</span></h2>
+  <p class="muted small">Registra un despliegue (POST /v1/deployments) con esta cuenta, símbolo y magic; el worker las asigna en su repaso periódico.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Cuenta</th><th>Símbolo</th><th>Magic</th><th class="num">Operaciones</th><th class="num">Abiertas</th><th>Primera (UTC)</th><th>Última (UTC)</th></tr></thead>
+    <tbody>
+    {% for u in unassigned %}
+      <tr>
+        <td class="nowrap">{{ u.account_login }} <span class="muted">{{ u.account_server }}</span></td>
+        <td>{{ u.symbol }}</td>
+        <td class="mono">{{ u.magic_number }}</td>
+        <td class="num">{{ u.trades }}</td>
+        <td class="num">{{ u.open_trades }}</td>
+        <td class="nowrap">{{ u.first_entry | utc('%Y-%m-%d %H:%M') }}</td>
+        <td class="nowrap">{{ u.last_entry | utc('%Y-%m-%d %H:%M') }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">Todas las operaciones están asignadas a un bot.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% if unassigned %}<p><a href="/dashboard/operaciones?bot=none">Ver las operaciones sin asignar</a></p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Eventos fallidos <span class="muted small">(últimos 50)</span></h2>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>#</th><th>Terminal</th><th>Tipo</th><th>Hora MT5 (UTC)</th><th>Recibido (UTC)</th><th class="num">Intentos</th><th>Error</th></tr></thead>
+    <tbody>
+    {% for f in failed %}
+      <tr>
+        <td class="mono">{{ f.id }}</td>
+        <td>{{ f.terminal }}</td>
+        <td>{{ f.event_type }}</td>
+        <td class="nowrap">{{ f.event_time | utc }}</td>
+        <td class="nowrap">{{ f.received_at | utc }}</td>
+        <td class="num">{{ f.attempts }}</td>
+        <td class="error-cell">{{ f.error or '—' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">No hay eventos fallidos.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

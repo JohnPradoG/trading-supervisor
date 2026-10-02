@@ -6,11 +6,15 @@
 		max_size 2MB
 	}
 
+	# La Content-Security-Policy la pone la aplicación en /dashboard (solo scripts y estilos
+	# propios, sin código en línea); Caddy no la sobrescribe.
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
-		Referrer-Policy "no-referrer"
+		# same-origin y no no-referrer: con no-referrer los navegadores envían "Origin: null" en
+		# los formularios del propio sitio (login/logout del dashboard) y no se puede verificar.
+		Referrer-Policy "same-origin"
 		-Server
 	}
 

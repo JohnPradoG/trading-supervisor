@@ -1,0 +1,40 @@
+{% macro online(t) -%}
+{% if t.online %}<span class="badge ok"><span class="dot"></span>online</span>
+{% elif t.heartbeat_at %}<span class="badge bad"><span class="dot"></span>sin latido</span>
+{% else %}<span class="badge muted-badge">nunca</span>{% endif %}
+{%- endmacro %}
+
+{% macro direction(d) -%}
+<span class="dir dir-{{ d.value | lower }}">{{ 'Compra' if d.value == 'BUY' else 'Venta' }}</span>
+{%- endmacro %}
+
+{% macro bot_label(row) -%}
+{% if row.bot_name %}{{ row.bot_name }} <span class="muted">v{{ row.version }}</span>
+{% else %}<span class="badge warn">sin asignar</span>{% endif %}
+{%- endmacro %}
+
+{% macro terminals_table(terminals) -%}
+<div class="table-wrap">
+<table>
+  <thead><tr><th>Terminal</th><th>Estado</th><th>Último latido (UTC)</th><th>EA</th><th>Cuenta</th><th>MT5</th></tr></thead>
+  <tbody>
+  {% for t in terminals %}
+    <tr>
+      <td>{{ t.name }}</td>
+      <td>{{ online(t) }}</td>
+      <td class="nowrap">{{ t.heartbeat_at | utc }}</td>
+      <td>{{ t.ea_version or '—' }}</td>
+      <td class="nowrap">{{ t.account_login }} <span class="muted">{{ t.account_server }}</span></td>
+      <td class="nowrap">
+        {% if t.terminal_connected is none %}—{% else %}
+        {{ 'conectado' if t.terminal_connected else 'desconectado' }} ·
+        {{ 'trading permitido' if t.trade_allowed else 'trading no permitido' }}{% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">No hay terminales registrados (se crean con <code>supervisor-cli create-terminal</code>).</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{%- endmacro %}

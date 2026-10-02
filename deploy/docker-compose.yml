@@ -1,11 +1,11 @@
-# Trading Supervisor · Fase 6
+# Trading Supervisor · Fase 7
 # Uso (desde la carpeta deploy/):
 #   cp .env.example .env   # y completar las claves y el dominio
 #   docker compose up -d --build
 # Servicios:
 #   postgres  base de datos (solo accesible desde el propio VPS)
 #   migrate   aplica las migraciones y termina; la API espera a que acabe bien
-#   api       FastAPI (solo accesible a través de Caddy)
+#   api       FastAPI + dashboard web en /dashboard (solo accesible a través de Caddy)
 #   worker    convierte los eventos del EA en operaciones (trades) y las analiza; sin puertos
 #   caddy     HTTPS automático con Let's Encrypt en los puertos 80/443
 
@@ -16,6 +16,7 @@ x-app-env: &app-env
   SUPERVISOR_ADMIN_TOKEN: ${SUPERVISOR_ADMIN_TOKEN:?Define SUPERVISOR_ADMIN_TOKEN en deploy/.env}
   SUPERVISOR_LOG_LEVEL: ${SUPERVISOR_LOG_LEVEL:-INFO}
   SUPERVISOR_DB_POOL_SIZE: "3"
+  SUPERVISOR_DASHBOARD_SESSION_HOURS: ${SUPERVISOR_DASHBOARD_SESSION_HOURS:-12}
   # Análisis y estadísticas: la API y el worker deben usar los mismos valores.
   SUPERVISOR_BREAKEVEN_R_FRACTION: ${SUPERVISOR_BREAKEVEN_R_FRACTION:-0.05}
   SUPERVISOR_STATS_MIN_SAMPLE: ${SUPERVISOR_STATS_MIN_SAMPLE:-30}
