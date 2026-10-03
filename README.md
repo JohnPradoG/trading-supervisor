@@ -10,7 +10,7 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | Fase | Estado |
 | --- | --- |
 | 1 · Arquitectura | Aprobada |
-| 2 · Base de datos | Hecha: 25 tablas (27 con `pattern_runs` de la fase 9 y `experiment_results` de la 10), migraciones Alembic, reglas de inmutabilidad, backups |
+| 2 · Base de datos | Hecha: 25 tablas (28 con `pattern_runs` de la fase 9, `experiment_results` de la 10 y `diagnosis_runs` del diagnóstico), migraciones Alembic, reglas de inmutabilidad, backups |
 | 3 · API | Hecha: ingesta idempotente, API keys por terminal, registro de bots, HTTPS con Caddy |
 | 4 · Bridge MT5 (EA Monitor) | Hecha: EA de solo lectura con cola en disco, ver [mt5/README.md](mt5/README.md) |
 | 5 · Registro de operaciones | Hecha: worker que convierte deals, SL/TP y fotos de posiciones en operaciones con riesgo, motivo de salida, MFE/MAE y reentradas |
@@ -21,6 +21,7 @@ sobrescribir nunca la historia. Arquitectura completa (Fase 1):
 | 9.1 · Importar historial | **Hecha**: script de MT5 de solo lectura que envía velas M1 y todos los deals antiguos (marcados `importado`), despliegues con fechas pasadas y `supervisor-cli backfill`: DNA y trampas con datos desde el primer día, ver [Importar el historial](#importar-el-historial-de-mt5) |
 | 10 · Laboratorio | **Hecha**: experimentos numerados (#001) con su cambio documentado y revisiones de resultados de solo inserción, filtro contrafactual sobre operaciones reales con el split congelado de la fase 9 (titular fuera de muestra), importación del Strategy Tester (CSV de deals; HTML/XML tolerante) separada de lo real y comparación lado a lado de brazos y versiones, ver [Laboratorio](#laboratorio-fase-10) |
 | 15 · Alertas | **Hecha (mínima)**: motor en el worker con deduplicación, enfriamiento y resolución; TRAMPA_ACTIVA (operación nueva que cumple una trampa validada), trampas validadas y caducadas, EA sin latido; Telegram opcional; página "Alertas" con reconocimiento, ver [Alertas](#alertas) |
+| 16 · Diagnóstico de bots | **Hecha**: por versión de bot, qué está fallando (SL muy corto, TP lejano, devolver ganancias, malas horas, conducta tras pérdidas, spread alto, reentradas, trampas validadas), qué cambiar y qué funciona, con réplica de salidas sobre velas M1 y selección solo en entrenamiento; página "Diagnóstico", API y `supervisor-cli diagnose`, ver [Diagnóstico de bots](#diagnóstico-de-bots) |
 | 11 · Machine Learning | Solo si los datos lo justifican: hace falta antes un volumen de operaciones cerradas que permita validar fuera de muestra (cientos por versión) y que las trampas validadas con reglas simples se queden cortas |
 
 ## Estructura
@@ -37,8 +38,8 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
   supervisor/alerts/ motor de alertas del worker (deduplicación, resolución) y Telegram
   supervisor/dashboard/ dashboard web: rutas, sesión/CSRF, plantillas Jinja2, htmx y Chart.js
   supervisor/cli.py  alta de cuentas, terminales y API keys; reprocess; trade-summary;
-                     analyze; dna; stats; patterns; backfill; experiment; alerts;
-                     telegram setup-help
+                     analyze; dna; stats; patterns; diagnose; backfill; experiment;
+                     alerts; telegram setup-help
   migrations/        0001 esquema inicial · 0002 reglas de inmutabilidad (triggers)
                      0003 columnas del worker (event_time, reintentos, estado vivo)
                      0004 análisis versionado (hash de entradas, FACT/HYPOTHESIS)
@@ -49,6 +50,7 @@ backend/             paquete Python `supervisor` + migraciones + pruebas
                           resultados y backtests de solo inserción
                      0009 alertas: clave de deduplicación, resolución, entrega a Telegram
                           y reconocimiento (solo inserción salvo esas columnas)
+                     0010 diagnóstico: diagnosis_runs de solo inserción (hash de entradas único)
   tests/             pruebas contra PostgreSQL real
 docs/                trading-dna.md (definición de cada variable del DNA), guía del VPS
 deploy/              Dockerfile, docker-compose.yml, Caddyfile, .env.example
@@ -175,6 +177,8 @@ ts experiment list
 | `GET /v1/experiments/{n}/comparison` | admin | Brazos lado a lado (original, filtrado, candidata, backtests) por tramo, con curvas, avisos y trampas de cada versión |
 | `GET /v1/versions/compare?a=&b=` | admin | Dos versiones cualesquiera lado a lado (`symbol` opcional), con la diferencia de expectativa en R (Welch) |
 | `GET /v1/bots/{bot_id}/compare-versions` | admin | Métricas de cada versión del bot lado a lado, con avisos de muestra. Filtros: `symbol`, `account_id`, `source`, `from`/`to` |
+| `GET /v1/bots/{bot_id}/versions/{version_id}/diagnosis` | admin | Último diagnóstico de la versión (`latest`, con el informe completo) e historia (`history`). `symbol` y `limit` opcionales. Ver [Diagnóstico de bots](#diagnóstico-de-bots) |
+| `POST /v1/bots/{bot_id}/versions/{version_id}/diagnosis` | admin | Calcula el diagnóstico ahora; con las mismas entradas devuelve `sin_cambios` y no recalcula |
 | `GET /v1/alerts` | admin | Últimas alertas. Filtros: `kind` (`TRAMPA_ACTIVA`, `PATRON_VALIDADO`, `PATRON_CADUCADO`, `EA_SIN_LATIDO`), `severity`, `unacknowledged`, `limit`. Ver [Alertas](#alertas) |
 | `POST /v1/alerts/{id}/ack` | admin | Reconocer una alerta (idempotente: se conserva la primera fecha) |
 | `/dashboard` | navegador (sesión) | Dashboard web de solo lectura, ver [Dashboard](#dashboard) |
@@ -209,6 +213,7 @@ grep SUPERVISOR_ADMIN_TOKEN /opt/trading-supervisor/deploy/.env | cut -d= -f2
 | Operaciones | Abiertas y cerradas con filtros (bot o "sin asignar", versión, símbolo, estado, dirección, fechas de entrada) que se aplican sin recargar (HTMX), 50 por página, con neto, puntos, R y motivo de salida |
 | Detalle | Todos los campos, historia de eventos, gráfico de cierres M1 de entrada − 30 min a cierre + 30 min con entrada, SL/TP inicial y final y cierre, MFE/MAE, notas de calidad de datos, el análisis (fase 6) y el Trading DNA por secciones ("sin dato" con su motivo y cobertura de velas por timeframe) |
 | Bots | Bots → versiones → despliegues, con operaciones, win rate, neto y profit factor por versión (las estadísticas completas llegan con la Fase 6). Solo lectura: el registro sigue por API/CLI |
+| Diagnóstico | Por versión de bot: operaciones, win rate, expectativa, fallos detectados y cambios validados, con enlace al informe completo (qué falla ordenado por R perdido, qué cambiar con su etiqueta "validada" o "candidata, no validada", qué funciona) y descarga en Markdown o HTML. Cada sugerencia tiene un botón **Crear experimento** (POST con token CSRF; solo escribe en el laboratorio). El Resumen muestra el peor fallo y el mejor cambio validado de cada bot activo. Ver [Diagnóstico de bots](#diagnóstico-de-bots) |
 | Laboratorio | Experimentos (#, título, bot base, estado, revisiones y titular: expectativa fuera de muestra original → filtrado) y formulario para comparar dos versiones. El detalle de cada experimento muestra su definición, la tabla lado a lado por tramo (fuera de muestra primero, dentro de muestra marcado como optimista), las curvas de neto acumulado de cada brazo, las trampas de cada versión y las revisiones. En Trampas, cada trampa validada tiene un botón **Crear experimento** (POST con token CSRF) que crea el experimento con el filtro "saltarse esas entradas" y calcula el contrafactual |
 | Alertas | Últimas 200 alertas con filtros por tipo, gravedad y "sin reconocer", estado de entrega a Telegram y botón **Reconocer** (POST con token CSRF; solo pone la fecha de reconocimiento). El menú muestra cuántas faltan por reconocer y el Resumen las trampas activas recientes. Ver [Alertas](#alertas) |
 | Sistema | Terminales y versión del EA, últimos 50 eventos FAILED con su error, operaciones sin despliegue agrupadas por cuenta + magic + símbolo (lo que falta registrar) |
@@ -550,10 +555,16 @@ Cómo se evita el ruido:
 - **Al arrancar** no se avisa de todo el histórico: solo de trampas que cambiaron en los
   últimos 7 días y de operaciones de la última hora.
 
-Limitación: al abrir una operación todavía no existe su análisis (se hace al cerrar), así que
-una trampa que dependa de un hecho del análisis (p. ej. "precio contra la EMA200 H1" de las
-reglas de la fase 6) no se puede comprobar al entrar y no genera `TRAMPA_ACTIVA`; las
-condiciones del Trading DNA (como la tendencia H1 relativa), la dirección y la reentrada sí.
+**Trampas basadas en EMA al abrir:** el análisis de la fase 6 se hace al cerrar, así que el
+Trading DNA calcula ya al abrir los *hechos previos a la entrada* (precio frente a EMA200/EMA50 de
+H1 y M15, percentil de volatilidad ATR H1, spread de la última vela M1 cerrada, reentrada) y los
+guarda en `trade_dna.inputs.hechos_previos` con la misma forma que los hechos de la fase 6 (mismas
+velas cerradas antes de la entrada, sin lookahead). `TRAMPA_ACTIVA` los usa para evaluar trampas
+como "precio contra la EMA200 H1". Al cerrar, la búsqueda de patrones prefiere los hechos del
+análisis; estos solo se usan mientras no exista. Un DNA antiguo (calculado antes de la versión
+0.12.0) no los tiene: sus condiciones quedan desconocidas y no disparan hasta recalcular
+(`supervisor-cli dna --all`). Lo que depende de lo que pasa *después* de entrar sigue sin poder
+evaluarse al abrir.
 
 ### Telegram paso a paso
 
@@ -597,6 +608,57 @@ oculta en los errores).
 API (token de administración): `GET /v1/alerts?kind=TRAMPA_ACTIVA&severity=CRITICAL&unacknowledged=true`
 y `POST /v1/alerts/{id}/ack`. Reconocer solo pone la fecha (una vez; la base impide
 cambiarla o borrarla).
+
+## Diagnóstico de bots
+
+Responde, por versión de bot (y símbolo opcional): **qué está fallando, qué cambiar y qué
+funciona mejor**. Es texto para quien edita el EA: nada modifica ni controla los bots y no se
+envía ninguna orden. Se ve en **https://TU_DOMINIO/dashboard/diagnostico** (con descarga en
+Markdown y HTML), por API (`GET/POST /v1/bots/{bot}/versions/{version}/diagnosis`) y con
+`supervisor-cli diagnose --version <id> [--symbol S] [--report-only] [--html]`. El worker lo
+recalcula una vez al día, justo después de la búsqueda de patrones, y solo si hay operaciones
+nuevas, un split nuevo o parámetros distintos (cada diagnóstico es una fila de solo inserción
+en `diagnosis_runs` con el hash de sus entradas: las mismas entradas no se recalculan).
+
+**Modos de fallo** (descriptivos, ordenados por R perdido): `SL_DEMASIADO_AJUSTADO` (cerró por
+SL y después el precio llegó al TP), `TP_DEMASIADO_LEJOS` (recorrió al menos el 70 % del camino
+al TP y no ganó), `DEVUELVE_BENEFICIO` (llegó a ir a favor y terminó perdiendo), `HORARIO`
+(malas sesiones, franjas y días), `TRAS_PERDIDAS` (operaciones en la hora siguiente a una pérdida
+y tras rachas de pérdidas), `SPREAD_ALTO`, `REENTRADAS` y `TRAMPA:<id>` (trampas validadas de la
+fase 9). **Qué funciona:** ventajas validadas de la fase 9, cambios validados y mejores sesiones,
+franjas y días con muestra suficiente.
+
+**Réplica de salidas** (`analytics/exit_replay.py`): con la entrada real (hora, precio,
+dirección, riesgo) y las velas M1 se simula otra regla de salida: SL más ancho o más corto, TP,
+breakeven, stop por tiempo, trailing y SL+TP combinados. Reglas: si en una vela se tocan el
+stop y el objetivo se supone **primero el stop**; breakeven y trailing se actualizan al cierre de
+cada vela y valen desde la siguiente; las ventas se comparan con Bid + spread al entrar; sin
+deslizamiento; se suman la comisión y el swap reales; si el EA cerró a mano o por su lógica esa
+decisión se respeta. El informe incluye la **fidelidad** de la réplica (cuántas veces reproduce
+el motivo de salida real): si es baja, las sugerencias de salida valen menos. Es una
+simulación sobre entradas reales, no un backtest con otras entradas.
+
+**Cómo se evita el sobreajuste:**
+
+1. La rejilla es **pequeña, fija y registrada** (20 variantes de salida y 25 filtros de horario,
+   día, sesión, racha, spread y reentradas); no se ajusta a los datos y el informe dice cuántas
+   se probaron.
+2. Se **elige solo con el tramo de entrenamiento** del split congelado de la fase 9 (la mejor
+   variante de cada familia que mejora la expectativa).
+3. Cada elegida se **evalúa una sola vez** en validación y fuera de muestra. Es **validada**
+   solo si la mejora de la expectativa por operación (IC 95 % por encima de 0) se confirma en
+   validación y fuera de muestra con la muestra mínima; si no, **candidata, no validada** (no es
+   un resultado) o **sin datos suficientes**. El titular es siempre fuera de muestra;
+   entrenamiento se muestra marcado como optimista y forward solo se enseña.
+4. **Win rate nunca solo:** siempre con su intervalo de Wilson, la expectativa en R y el profit
+   factor. Si un cambio sube el win rate pero empeora el neto (p. ej. TP más corto) se avisa
+   "Gana más operaciones pero pierde dinero: no recomendado", se excluye de las sugerencias y se
+   lista aparte; "Sube el % de aciertos sin empeorar el resultado" marca los preferidos.
+
+Parámetros: `SUPERVISOR_DIAGNOSIS_HORIZON_FACTOR` (3: horizonte = factor × duración real),
+`..._HORIZON_MIN_MINUTES` (60), `..._HORIZON_MAX_MINUTES` (1440), `..._MAX_REPLAY_TRADES` (3000,
+las más recientes), `..._TP_REACH_FRACTION` (0.7), `..._AFTER_LOSS_MINUTES` (60) y
+`..._LOSS_STREAK` (2). Cada sugerencia se puede llevar al Laboratorio con **Crear experimento**.
 
 ## Desarrollo y pruebas
 

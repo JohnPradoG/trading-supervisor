@@ -45,8 +45,10 @@ from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session
 
 from supervisor.analytics import dna_features as df
+from supervisor.analytics import market
 from supervisor.analytics.indicators import Bar
 from supervisor.analytics.market import aggregated_bars, floor_time
+from supervisor.analytics.pre_entry import PRE_ENTRY_VERSION, build_pre_entry_facts
 from supervisor.config import Settings
 from supervisor.models import (
     Account,
@@ -122,6 +124,9 @@ def dna_parameters(settings: Settings) -> dict[str, Any]:
         "historia_dias": settings.dna_history_days,
         "volatilidad_dias": settings.analysis_volatility_lookback_days,
         "volatilidad_muestras_min": settings.analysis_volatility_min_samples,
+        # Hechos previos a la entrada (supervisor.analytics.pre_entry): EMAs M15/H1 de la fase
+        # 6, percentil de volatilidad y spread, calculados al abrir.
+        "hechos_previos": PRE_ENTRY_VERSION,
     }
 
 
@@ -175,6 +180,7 @@ class Collected:
     fingerprint: dict[str, Any]
     last_bar_time: datetime | None
     m1_count: int
+    pre_entry: dict[str, Any]
 
 
 def collect(session: Session, trade: Trade, broker_id: uuid.UUID, settings: Settings) -> Collected:
@@ -253,6 +259,18 @@ def collect(session: Session, trade: Trade, broker_id: uuid.UUID, settings: Sett
         volatility_min_samples=settings.analysis_volatility_min_samples,
     )
     m1_total = _m1_count(session, broker_id, trade, settings)
+    # Hechos previos a la entrada (mismas velas cerradas antes de entrar que la fase 6).
+    context = market.market_context(session, broker_id, trade.symbol, entry, settings)
+    pre_entry = build_pre_entry_facts(
+        buy=trade.direction.value == "BUY",
+        entry_price=float(trade.entry_price),
+        point=point,
+        initial_sl=float(trade.initial_sl) if trade.initial_sl is not None else None,
+        context=context,
+        spread_points=spread["puntos"] if spread else None,
+        reentry=trade.reentry_of_trade_id is not None,
+        news=news,
+    )
     fingerprint = {
         "operacion": trade_snapshot(trade, main_tf),
         "parametros": dna_parameters(settings),
@@ -262,8 +280,9 @@ def collect(session: Session, trade: Trade, broker_id: uuid.UUID, settings: Sett
         },
         "spread": spread,
         "noticias": news,
+        "hechos_previos": pre_entry,
     }
-    return Collected(inputs, fingerprint, last_m1, m1_total)
+    return Collected(inputs, fingerprint, last_m1, m1_total, pre_entry)
 
 
 def trade_snapshot(trade: Trade, main_tf: str) -> dict[str, Any]:
@@ -274,6 +293,9 @@ def trade_snapshot(trade: Trade, main_tf: str) -> dict[str, Any]:
         "precio_entrada": str(trade.entry_price),
         "punto": str(trade.symbol_point) if trade.symbol_point is not None else None,
         "tf_principal": main_tf,
+        # Para los hechos previos (spread frente al SL, reentrada): se conocen al abrir.
+        "sl_inicial": str(trade.initial_sl) if trade.initial_sl is not None else None,
+        "reentrada": trade.reentry_of_trade_id is not None,
     }
 
 
@@ -330,11 +352,12 @@ def compute_dna(
                 "huella_parametros": canonical_hash(collected.fingerprint["parametros"]),
                 "velas_m1": collected.m1_count,
                 "desde": history_start(trade.entry_time, settings).isoformat(),
-                "incompleto": bool(missing_data),
+                "incompleto": bool(missing_data) or collected.pre_entry["incompleto"],
                 "sin_datos": missing_data,
             },
             "spread": collected.fingerprint["spread"],
             "noticias": collected.fingerprint["noticias"],
+            "hechos_previos": collected.pre_entry,
         },
     )
     session.add(dna)

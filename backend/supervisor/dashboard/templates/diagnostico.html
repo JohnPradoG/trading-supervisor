@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Diagnóstico{% endblock %}
+{% block content %}
+<h1>Diagnóstico</h1>
+<p class="muted">Qué está fallando en cada bot, qué cambiar y qué funciona. Son solo textos para quien edita el
+EA: el supervisor no modifica ni controla los bots. Los cambios se eligen únicamente con el tramo de
+<strong>entrenamiento</strong> y se evalúan una vez en validación y fuera de muestra: solo se llaman
+<strong>validada</strong> si se confirmaron ahí; lo demás es <em>candidata, no validada</em>. El worker lo
+recalcula cada día (solo si hay operaciones nuevas) y también se puede pedir con
+<span class="mono">supervisor-cli diagnose --version &lt;id&gt;</span>.</p>
+<section class="card">
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Bot</th><th>Versión</th><th class="num">Operaciones</th><th class="num">Aciertos</th><th class="num">Expectativa</th><th class="num">Fallos</th><th class="num">Validadas</th><th>Calculado (UTC)</th><th></th></tr></thead>
+    <tbody>
+    {% for s in scopes %}{% set run = s.run %}
+      <tr>
+        <td>{{ s.bot.name }}</td>
+        <td>v{{ s.version.version }}</td>
+        {% if run %}
+        <td class="num">{{ run.n_trades }}</td>
+        <td class="num">{{ (run.win_rate * 100) | pct if run.win_rate is not none else '—' }}</td>
+        <td class="num {{ run.expectancy_r | sign }}">{{ run.expectancy_r | num if run.expectancy_r is not none else '—' }} R</td>
+        <td class="num">{{ run.fallos }}</td>
+        <td class="num">{{ run.validadas }}</td>
+        <td class="nowrap">{{ run.created_at | utc('%Y-%m-%d %H:%M') }}</td>
+        <td class="nowrap"><a href="/dashboard/diagnostico/{{ s.version.id }}">Ver</a> ·
+          <a href="/dashboard/diagnostico/{{ s.version.id }}/descargar?formato=md">.md</a> ·
+          <a href="/dashboard/diagnostico/{{ s.version.id }}/descargar?formato=html">.html</a></td>
+        {% else %}
+        <td colspan="6" class="muted">Todavía sin diagnóstico.</td><td></td>
+        {% endif %}
+      </tr>
+    {% else %}
+      <tr><td colspan="9" class="muted">Todavía no hay operaciones cerradas de ningún bot.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">Aciertos (win rate) siempre junto a la expectativa por operación: un win rate que sube mientras el neto empeora se avisa en el informe.</p>
+</section>
+{% endblock %}

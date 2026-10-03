@@ -4,8 +4,10 @@ Tipos (por prioridad):
 - TRAMPA_ACTIVA (CRITICAL): una operación recién abierta (alerts_trap_window_minutes, sin las
   importadas del historial) cuyo Trading DNA cumple una trampa VALIDADA fuera de muestra de su
   versión de bot (alcance de toda la versión o de su símbolo). Una alerta por operación y
-  trampa. Las candidatas no validadas nunca disparan esta alerta. Las condiciones que usan
-  hechos del análisis (que solo existe al cerrar) no se pueden evaluar al abrir: se omiten.
+  trampa. Las candidatas no validadas nunca disparan esta alerta. Las condiciones sobre
+  hechos de la fase 6 previos a la entrada (precio frente a EMA200/EMA50 de H1 y M15,
+  volatilidad, spread) se evalúan con los que el DNA guarda al abrir
+  (supervisor.analytics.pre_entry); las que dependen de lo que pasó después, no.
 - PATRON_VALIDADO (WARNING) / PATRON_CADUCADO (INFO): una trampa pasa a VALIDATED o a
   DECAYED (cambiadas en los últimos alerts_pattern_lookback_days días). Una vez por hipótesis.
 - EA_SIN_LATIDO (WARNING): un terminal sin latido desde hace alerts_heartbeat_minutes, solo
@@ -39,6 +41,7 @@ from supervisor.alerts import telegram as tg
 from supervisor.analytics import pattern_search as ps
 from supervisor.analytics import patterns as pt
 from supervisor.analytics.dna_features import FEATURES
+from supervisor.analytics.pre_entry import fact_values
 from supervisor.config import Settings
 from supervisor.models import (
     Account,
@@ -258,29 +261,42 @@ def _oos_tests(session: Session, ids: list[uuid.UUID]) -> dict[uuid.UUID, Patter
     return {t.hypothesis_id: t for t in rows}
 
 
-def _dna(session: Session, ids: list[uuid.UUID]) -> dict[uuid.UUID, dict[str, Any]]:
+def _dna(
+    session: Session, ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[dict[str, Any], dict[str, Any] | None]]:
+    """Variables del DNA vigente y sus hechos previos a la entrada (si los tiene)."""
     if not ids:
         return {}
     rows = session.execute(
         text(
-            "SELECT DISTINCT ON (trade_id) trade_id, features FROM trade_dna"
+            "SELECT DISTINCT ON (trade_id) trade_id, features,"
+            " inputs->'hechos_previos'->'hechos' FROM trade_dna"
             " WHERE trade_id = ANY(:ids) ORDER BY trade_id, dna_version DESC"
         ),
         {"ids": ids},
     )
-    return {trade_id: features for trade_id, features in rows}
+    return {trade_id: (features, previous) for trade_id, features, previous in rows}
 
 
-def entry_observation(trade: Trade, features: dict[str, Any]) -> pt.Obs:
-    """Las variables de la búsqueda conocidas AL ENTRAR: DNA, dirección y reentrada. Los
-    hechos del análisis no existen hasta el cierre (quedan desconocidos)."""
+def entry_observation(
+    trade: Trade, features: dict[str, Any], pre_entry: dict[str, Any] | None = None
+) -> pt.Obs:
+    """Las variables de la búsqueda conocidas AL ENTRAR: DNA, dirección, reentrada y los
+    hechos previos a la entrada que el DNA guarda al abrir (EMAs M15/H1, volatilidad, spread;
+    ver supervisor.analytics.pre_entry). Sin ellos (DNA antiguo) quedan desconocidos."""
     values: dict[str, Any] = {
         f.name: features.get(f.name) for f in FEATURES if f.searchable and f.available
     }
     values["direccion"] = trade.direction.value
     values["reentrada"] = trade.reentry_of_trade_id is not None
+    values.update(fact_values(pre_entry))
     return pt.Obs(
-        trade_id=str(trade.trade_id), close_time=trade.entry_time, r=0.0, win=False, values=values
+        trade_id=str(trade.trade_id),
+        close_time=trade.entry_time,
+        r=0.0,
+        win=False,
+        values=values,
+        facts=pre_entry,
     )
 
 
@@ -326,10 +342,10 @@ def trap_candidates(session: Session, settings: Settings, now: datetime) -> list
     )
     out = []
     for trade in trades:
-        features = dna.get(trade.trade_id)
-        if features is None:
+        found = dna.get(trade.trade_id)
+        if found is None:
             continue  # sin DNA todavía: se mira en la próxima pasada
-        obs = entry_observation(trade, features)
+        obs = entry_observation(trade, *found)
         for h in by_version[trade.bot_version_id]:
             if h.symbol and h.symbol != trade.symbol:
                 continue

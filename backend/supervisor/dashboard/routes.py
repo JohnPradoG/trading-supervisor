@@ -1,9 +1,9 @@
 """Páginas del dashboard (/dashboard): HTML renderizado en el servidor con Jinja2 + HTMX.
 
 Solo lectura: ninguna ruta modifica datos de trading ni envía nada a MT5. Los únicos POST son
-login, logout, "crear experimento" desde una trampa validada (escribe solo en las tablas del
-laboratorio) y "reconocer" una alerta (solo pone acknowledged_at), con token CSRF. Las horas
-se muestran siempre en UTC.
+login, logout, "crear experimento" desde una trampa validada o una sugerencia del diagnóstico
+(escriben solo en las tablas del laboratorio) y "reconocer" una alerta (solo pone
+acknowledged_at), con token CSRF. Las horas se muestran siempre en UTC.
 """
 
 import logging
@@ -26,6 +26,8 @@ from supervisor.dashboard.auth import DashboardSession
 from supervisor.models.enums import AlertSeverity, Direction, TradeStatus
 from supervisor.services import alerts as alerts_svc
 from supervisor.services import dashboard as svc
+from supervisor.services import diagnosis as diagnosis_svc
+from supervisor.services import diagnosis_report
 from supervisor.services import lab as lab_svc
 from supervisor.services import patterns as patterns_svc
 from supervisor.services.errors import NotFound, ServiceError
@@ -287,6 +289,7 @@ def resumen(request: Request, dash: DashSession, session: SessionDep) -> HTMLRes
         "ranges": list(svc.EQUITY_RANGES),
         "active_traps": patterns_svc.active_traps(session),
         "trap_alerts": alerts_svc.recent_traps(session),
+        "diag_cards": diagnosis_svc.overview_cards(session),
     }
     return _render(request, "resumen.html", context, dash)
 
@@ -469,6 +472,102 @@ def trampas(
         "fdr_q": settings.patterns_fdr_q,
     }
     return _render(request, "trampas.html", context, dash)
+
+
+# Diagnóstico ------------------------------------------------------------------------------
+
+
+@router.get("/diagnostico")
+def diagnostico(request: Request, dash: DashSession, session: SessionDep) -> HTMLResponse:
+    context = {"nav": "diagnostico", "scopes": diagnosis_svc.scopes_page(session)}
+    return _render(request, "diagnostico.html", context, dash)
+
+
+def _diag_run(session, version_id: uuid.UUID, symbol: str | None):
+    symbol = (symbol or "").strip()[:64] or None
+    run = diagnosis_svc.latest_run(session, version_id, symbol)
+    if run is None:
+        raise NotFound("diagnóstico no encontrado")
+    return run
+
+
+@router.get("/diagnostico/{version_id}")
+def diagnostico_version(
+    request: Request,
+    version_id: uuid.UUID,
+    dash: DashSession,
+    session: SessionDep,
+    simbolo: str | None = None,
+) -> HTMLResponse:
+    try:
+        run = _diag_run(session, version_id, simbolo)
+    except NotFound:
+        return _render(request, "no_encontrada.html", {"nav": "diagnostico"}, dash, 404)
+    view = diagnosis_svc.run_view(run)
+    base = (request.app.state.settings.public_url or "").rstrip("/")
+    context = {
+        "nav": "diagnostico",
+        "run": view,
+        "r": view["report"],
+        "blocks": diagnosis_report.blocks(view["report"], view, base),
+        "symbol": run.symbol,
+        "labels": diagnosis_report.STATUS_LABEL,
+    }
+    return _render(request, "diagnostico_version.html", context, dash)
+
+
+@router.get("/diagnostico/{version_id}/descargar")
+def diagnostico_descargar(
+    request: Request,
+    version_id: uuid.UUID,
+    dash: DashSession,
+    session: SessionDep,
+    simbolo: str | None = None,
+    formato: str = "md",
+) -> Response:
+    """El informe como archivo adjunto (Markdown o HTML sin scripts)."""
+    try:
+        run = _diag_run(session, version_id, simbolo)
+    except NotFound:
+        return JSONResponse({"detail": "diagnóstico no encontrado"}, status_code=404)
+    view = diagnosis_svc.run_view(run)
+    base = (request.app.state.settings.public_url or "").rstrip("/")
+    as_html = formato == "html"
+    render = diagnosis_report.html_document if as_html else diagnosis_report.markdown
+    name = f"diagnostico-{view['report']['bot_name']}-v{view['report']['version']}"
+    name = "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+    return Response(
+        render(view["report"], view, base),
+        media_type="text/html" if as_html else "text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}.{"html" if as_html else "md"}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/diagnostico/{run_id}/experimento")
+def diagnostico_experimento(
+    request: Request,
+    run_id: uuid.UUID,
+    dash: DashSession,
+    session: SessionDep,
+    settings: SettingsDep,
+    clave: Annotated[str, Form(max_length=128)] = "",
+    csrf_token: Annotated[str, Form(max_length=128)] = "",
+) -> Response:
+    """Crea un experimento (laboratorio) desde una sugerencia del diagnóstico."""
+    if not auth.same_origin(request) or not auth.tokens_match(dash.csrf_token, csrf_token):
+        log.warning(
+            "crear experimento rechazado por CSRF", extra={"client": auth.client_ip(request)}
+        )
+        return JSONResponse({"detail": "token CSRF inválido"}, status_code=403)
+    try:
+        exp = diagnosis_svc.create_experiment_from(session, settings, run_id, clave)
+    except ServiceError as exc:
+        return JSONResponse({"detail": exc.message}, status_code=exc.status_code)
+    log.info("experimento creado desde un diagnóstico", extra={"experiment": exp.code})
+    return RedirectResponse(f"/dashboard/laboratorio/{exp.number}", status_code=303)
 
 
 # Alertas ----------------------------------------------------------------------------------
