@@ -11,7 +11,7 @@ from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, func, select, update
+from sqlalchemy import Engine, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -218,7 +218,15 @@ def committed(engine: Engine) -> dict:
     settings = Settings(database_url="postgresql://x/y", admin_token=ADMIN_TOKEN)
     with Session(engine, expire_on_commit=False) as session:
         scope = make_scope(session)
-        insert_diag_trades(session, scope, 200, seed=1, kind="sl_ajustado")
+        # Lejos de las fechas de otras pruebas (el backfill revisa todo lo que no tiene análisis).
+        insert_diag_trades(
+            session,
+            scope,
+            200,
+            seed=1,
+            kind="sl_ajustado",
+            start=datetime(2025, 6, 2, 0, 0, 30, tzinfo=UTC),
+        )
         session.commit()
     with Session(engine, expire_on_commit=False) as session:
         ps.run_patterns(session, settings, scope.version_id)
@@ -420,4 +428,3 @@ def test_trap_active_uses_ema_facts_computed_at_open(session: Session, settings:
 
     assert len(fired(against)) == 1
     assert not fired(with_trend) and not fired(legacy)
-    session.execute(update(Alert).values(acknowledged_at=None))
