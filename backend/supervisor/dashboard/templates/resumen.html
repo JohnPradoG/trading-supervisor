@@ -122,6 +122,20 @@
   </div>
 </section>
 
+{% if diag_cards %}
+<section class="card">
+  <h2>Diagnóstico de bots <span class="muted small"><a href="/dashboard/diagnostico">ver todo</a></span></h2>
+  <ul class="findings">
+  {% for c in diag_cards %}
+    <li><a href="/dashboard/diagnostico/{{ c.version_id }}">{{ c.bot_name }} v{{ c.version }}</a>
+      · {{ c.n }} operaciones · aciertos {{ (c.win_rate * 100) | pct if c.win_rate is not none else '—' }} · expectativa {{ c.expectancy_r | num if c.expectancy_r is not none else '—' }} R
+      {% if c.top_fallo %}<br><span class="muted small">Peor fallo: {{ c.top_fallo.titulo }} ({{ c.top_fallo.r_perdido | num(1) }} R perdidos)</span>{% endif %}
+      {% if c.top_cambio %}<br><span class="muted small"><span class="badge ok">validada</span> {{ c.top_cambio.accion }}</span>{% endif %}</li>
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
 <section class="card">
   <h2>Terminales</h2>
   {{ terminals_table(terminals) }}

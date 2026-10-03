@@ -107,6 +107,22 @@ class Settings(BaseSettings):
     # Puntos por curva de equity en las comparaciones.
     lab_curve_points: int = Field(default=400, ge=10, le=5000)
 
+    # Diagnóstico de bots (qué falla, qué cambiar, qué funciona). Solo texto para quien edita el
+    # EA: nada modifica ni controla los bots. Réplica de salidas con velas M1: horizonte =
+    # factor x duración real, entre un mínimo y un máximo de minutos (las operaciones más
+    # largas que el máximo no se replican). Como mucho N operaciones replicadas (las más
+    # recientes) para acotar la CPU del VPS.
+    diagnosis_horizon_factor: float = Field(default=3.0, ge=1, le=20)
+    diagnosis_horizon_min_minutes: int = Field(default=60, ge=1, le=10080)
+    diagnosis_horizon_max_minutes: int = Field(default=1440, ge=10, le=10080)
+    diagnosis_max_replay_trades: int = Field(default=3000, ge=10, le=50000)
+    # "TP demasiado lejos": recorrió al menos esta fracción del camino al TP y no ganó.
+    diagnosis_tp_reach_fraction: float = Field(default=0.7, gt=0, le=1)
+    # "Después de perder": operaciones abiertas en los N minutos siguientes a una pérdida y
+    # tras K pérdidas seguidas (descriptivo; los filtros usan una rejilla fija).
+    diagnosis_after_loss_minutes: int = Field(default=60, ge=1, le=1440)
+    diagnosis_loss_streak: int = Field(default=2, ge=2, le=10)
+
     # Alertas (sección 15). Las alertas informan: nada envía órdenes ni controla los bots.
     alerts_enabled: bool = True
     # Cada cuánto el worker evalúa las alertas (y después de cada repaso de patrones).

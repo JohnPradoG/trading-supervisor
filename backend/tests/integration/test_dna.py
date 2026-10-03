@@ -130,6 +130,14 @@ def test_dna_computed_when_trade_is_created(
     cov = dna.data_quality["timeframes"]
     assert cov["M5"]["cobertura"] == 1.0 and cov["D1"]["velas"] >= 20
 
+    # Hechos previos a la entrada, calculados al abrir (para TRAMPA_ACTIVA con trampas de EMA):
+    # historia alcista y compra = a favor de las EMAs; sin lookahead (solo velas cerradas).
+    previous = dna.inputs["hechos_previos"]
+    assert previous["version"] == 1 and "PRECIO_VS_EMA200_H1" in previous["hechos"]
+    assert previous["hechos"]["PRECIO_VS_EMA50_H1"]["a_favor"] is True
+    assert previous["hechos"]["SPREAD_ENTRADA"]["spread_puntos"] == 100
+    assert previous["hechos"]["VOLATILIDAD_ATR_H1"]["percentil"] is not None
+
     # El catálogo queda registrado con su tipo para la fase 9.
     with Session(engine) as session:
         rows = {r.name: r for r in session.scalars(select(FeatureDefinition))}

@@ -215,17 +215,21 @@ def load_observations(
     rows = session.execute(stmt).all()
     ids = [r.trade_id for r in rows]
     dna: dict[uuid.UUID, dict[str, Any]] = {}
+    pre_entry: dict[uuid.UUID, dict[str, dict[str, Any]]] = {}
     facts: dict[uuid.UUID, dict[str, dict[str, Any]]] = {}
     for start in range(0, len(ids), 5000):
         chunk = ids[start : start + 5000]
-        for trade_id, features in session.execute(
+        for trade_id, features, previous in session.execute(
             text(
-                "SELECT DISTINCT ON (trade_id) trade_id, features FROM trade_dna"
+                "SELECT DISTINCT ON (trade_id) trade_id, features,"
+                " inputs->'hechos_previos'->'hechos' FROM trade_dna"
                 " WHERE trade_id = ANY(:ids) ORDER BY trade_id, dna_version DESC"
             ),
             {"ids": chunk},
         ):
             dna[trade_id] = features
+            if previous is not None:
+                pre_entry[trade_id] = previous
         latest = dict(
             session.execute(
                 text(
@@ -254,7 +258,9 @@ def load_observations(
         values: dict[str, Any] = {name: features.get(name) for name in searchable}
         values["direccion"] = r.direction.value
         values["reentrada"] = r.reentry_of_trade_id is not None
-        trade_facts = facts.get(r.trade_id)
+        # Hechos del análisis (al cerrar); sin análisis, los previos a la entrada del DNA
+        # (supervisor.analytics.pre_entry), con la misma forma.
+        trade_facts = facts.get(r.trade_id, pre_entry.get(r.trade_id))
         for name, code, _ in FACT_VARIABLES:
             evidence = (trade_facts or {}).get(code)
             values[name] = evidence.get("a_favor") if evidence else None

@@ -13,6 +13,7 @@
     ts dna --trade <trade_id> | --all
     ts stats [--bot EA_Nasdaq_FVG_Retest] [--group-by version,session] [--from 2026-10-01]
     ts patterns --version <bot_version_id> [--symbol USTEC_x100] [--report-only]
+    ts diagnose --version <bot_version_id> [--symbol USTEC_x100] [--report-only] [--html]
     ts backfill [--from 2026-01-01] [--page-size 200]
     ts experiment create --base <bot_version_id> --title "..." --change "..." [--hypothesis <id>]
     ts experiment run-filter --id 1
@@ -45,6 +46,8 @@ from supervisor.models import Account, ApiClient, Bot, BotVersion, Broker, RawEv
 from supervisor.models.enums import AccountType, MarginMode, RawEventStatus, TradeSource
 from supervisor.security.api_keys import generate_api_key
 from supervisor.services import alerts as alerts_service
+from supervisor.services import diagnosis as diagnosis_service
+from supervisor.services import diagnosis_report
 from supervisor.services import dna as dna_service
 from supervisor.services import lab as lab_service
 from supervisor.services import patterns as patterns_service
@@ -522,6 +525,39 @@ def patterns(args: argparse.Namespace) -> None:
     print_report(report)
 
 
+def diagnose(args: argparse.Namespace) -> None:
+    """Calcula (si cambiaron sus entradas) el diagnóstico de una versión y lo imprime en
+    Markdown: qué está fallando, qué cambiar (con su estado de validación) y qué funciona."""
+    settings = get_settings()
+    with session_scope() as session:
+        version = session.get(BotVersion, args.version)
+        if version is None:
+            sys.exit(f"No existe la versión {args.version}.")
+        if args.report_only:
+            run = diagnosis_service.latest_run(session, version.id, args.symbol)
+            if run is None:
+                sys.exit("Todavía no hay diagnóstico de esa versión: ejecútalo sin --report-only.")
+            status = None
+        else:
+            status, run = diagnosis_service.compute_diagnosis(
+                session, settings, version.id, args.symbol
+            )
+        view = diagnosis_service.run_view(run)
+    base = (settings.public_url or "").rstrip("/")
+    if status is not None:
+        print(
+            "Diagnóstico: "
+            + (
+                "calculado"
+                if status == diagnosis_service.CREATED
+                else "sin cambios (mismas entradas)"
+            )
+            + f" · id {view['id']}\n"
+        )
+    render = diagnosis_report.html_document if args.html else diagnosis_report.markdown
+    print(render(view["report"], view, base))
+
+
 def backfill(args: argparse.Namespace) -> None:
     """Completa operaciones antiguas (tras importar el historial o registrar despliegues con
     fechas pasadas): despliegue, MFE/MAE, riesgo, Trading DNA y análisis. Por páginas, cada
@@ -932,6 +968,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-only", action="store_true", help="solo el informe, sin ejecutar la búsqueda"
     )
     p.set_defaults(func=patterns)
+
+    p = sub.add_parser(
+        "diagnose", help="diagnóstico de una versión: qué falla, qué cambiar y qué funciona"
+    )
+    p.add_argument("--version", required=True, type=_uuid, help="bot_version_id")
+    p.add_argument("--symbol", help="solo este símbolo (por defecto, todos juntos)")
+    p.add_argument("--report-only", action="store_true", help="el último guardado, sin calcular")
+    p.add_argument("--html", action="store_true", help="en HTML en lugar de Markdown")
+    p.set_defaults(func=diagnose)
 
     p = sub.add_parser(
         "backfill",

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Diagnóstico {{ r.bot_name }}{% endblock %}
+{% block content %}
+{% set qs = ('?simbolo=' ~ (symbol | urlencode)) if symbol else '' %}
+{% set qsa = ('&simbolo=' ~ (symbol | urlencode)) if symbol else '' %}
+<p class="small"><a href="/dashboard/diagnostico">&larr; Diagnóstico</a> ·
+  Descargar: <a href="/dashboard/diagnostico/{{ r.version_id }}/descargar?formato=md{{ qsa }}">Markdown</a> ·
+  <a href="/dashboard/diagnostico/{{ r.version_id }}/descargar?formato=html{{ qsa }}">HTML</a></p>
+{% for b in blocks %}
+  {% if b[0] == 'h1' %}<h1>{{ b[1] }}</h1>
+  {% elif b[0] == 'h2' %}<h2>{{ b[1] }}</h2>
+  {% elif b[0] == 'h3' %}<h3>{{ b[1] }}</h3>
+  {% elif b[0] == 'p' %}<p>{{ b[1] }}</p>
+  {% elif b[0] == 'quote' %}<p class="notice">{{ b[1] }}</p>
+  {% elif b[0] == 'ul' %}<ul class="findings">{% for t in b[1] %}<li>{{ t }}</li>{% endfor %}</ul>
+  {% elif b[0] == 'table' %}
+  <div class="table-wrap"><table>
+    <thead><tr>{% for h in b[1] %}<th>{{ h }}</th>{% endfor %}</tr></thead>
+    <tbody>{% for row in b[2] %}<tr>{% for c in row %}<td>{{ c }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+{% endfor %}
+
+{% set options = r.cambios | rejectattr('no_recomendada') | list %}
+{% if options %}
+<section class="card">
+  <h2>Crear experimento</h2>
+  <p class="muted small">Abre un experimento en el laboratorio desde una sugerencia (solo escribe en las tablas del laboratorio).</p>
+  {% for c in options %}
+  <form method="post" action="/dashboard/diagnostico/{{ run.id }}/experimento" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="clave" value="{{ c.clave }}">
+    <span class="badge {{ 'ok' if c.estado == 'validada' else 'muted-badge' }}">{{ labels.get(c.estado, c.estado) | lower }}</span>
+    {{ c.accion }}
+    <button type="submit" class="btn btn-ghost btn-small">Crear experimento</button>
+  </form><br>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

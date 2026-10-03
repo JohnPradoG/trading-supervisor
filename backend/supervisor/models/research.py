@@ -309,3 +309,31 @@ class Alert(Base):
     delivery_error: Mapped[str | None] = mapped_column(Text)
     next_delivery_at: Mapped[UTCDateTime | None]
     sent_at: Mapped[UTCDateTime | None]
+
+
+class DiagnosisRun(Base):
+    """Un diagnóstico de una versión de bot (y, opcional, un símbolo): qué está fallando, qué
+    cambiar y qué funciona mejor (supervisor.services.diagnosis). De solo inserción: cada
+    cálculo con entradas distintas es una fila nueva y las anteriores quedan como historia. El
+    hash de entradas es único por versión: las mismas entradas nunca se recalculan."""
+
+    __tablename__ = "diagnosis_runs"
+    __table_args__ = (
+        UniqueConstraint("bot_version_id", "inputs_hash"),
+        Index("ix_diagnosis_runs_version", "bot_version_id", "created_at"),
+    )
+
+    id: Mapped[UUIDPk]
+    bot_version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("bot_versions.id"))
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    split_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("data_splits.id"))
+    # sha256 de las entradas (operaciones, velas, DNA, split, patrones, parámetros y versión).
+    inputs_hash: Mapped[str] = mapped_column(String(64))
+    diagnosis_version: Mapped[str] = mapped_column(String(16))
+    n_trades: Mapped[int] = mapped_column(Integer)
+    last_close_time: Mapped[UTCDateTime | None]
+    # MANUAL (CLI, API, dashboard) o WORKER.
+    trigger: Mapped[str] = mapped_column(String(16))
+    params: Mapped[Json]
+    report: Mapped[Json]
+    created_at: Mapped[CreatedAt]

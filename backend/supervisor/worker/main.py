@@ -3,7 +3,8 @@
 Consulta raw_events pendientes cada worker_poll_interval_seconds, los convierte en
 operaciones y cada worker_maintenance_interval_seconds hace el repaso de operaciones
 recientes. Cada patterns_interval_seconds (un día) repasa la búsqueda de patrones de las
-versiones con operaciones (solo repite la búsqueda con patterns_new_trades cerradas nuevas).
+versiones con operaciones (solo repite la búsqueda con patterns_new_trades cerradas nuevas) y
+justo después el diagnóstico de bots (supervisor.services.diagnosis.diagnosis_pass).
 Cada alerts_interval_seconds (y justo después de los patrones) evalúa las alertas y las
 entrega por Telegram si está configurado (supervisor.alerts.engine).
 Con SIGTERM o SIGINT termina el lote en curso y sale limpio.
@@ -23,6 +24,7 @@ from supervisor.alerts.engine import alerts_pass
 from supervisor.analytics.pattern_search import patterns_pass
 from supervisor.config import Settings, get_settings
 from supervisor.log_config import configure_logging
+from supervisor.services.diagnosis import diagnosis_pass
 from supervisor.worker.maintenance import maintenance_pass
 from supervisor.worker.processor import TRANSIENT_ERRORS, process_batch
 
@@ -54,6 +56,9 @@ def run_forever(
                 last_maintenance = time.monotonic()
             if time.monotonic() - last_patterns >= settings.patterns_interval_seconds:
                 patterns_pass(session_factory, settings)
+                # Diagnóstico de bots: misma cadencia; solo si hay operaciones nuevas o un
+                # split nuevo (y nunca con las mismas entradas: hash).
+                diagnosis_pass(session_factory, settings)
                 last_patterns = time.monotonic()
                 last_alerts = float("-inf")  # trampas recién validadas o caducadas: avisar ya
             if time.monotonic() - last_alerts >= settings.alerts_interval_seconds:
